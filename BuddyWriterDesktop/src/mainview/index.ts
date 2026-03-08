@@ -64,14 +64,14 @@ type WriterRPC = {
 				params: { text: string };
 				response: { html: string };
 			};
-			getSettings: {
-				params: {};
-				response: Settings;
-			};
-			saveSettings: {
-				params: Settings;
-				response: { success: boolean };
-			};
+				getSettings: {
+					params: {};
+					response: Settings;
+				};
+				saveSettings: {
+					params: Settings;
+					response: { success: boolean; error?: string };
+				};
 			startMLXServer: {
 				params: { model: string; pythonPath: string };
 				response: { success: boolean; error?: string };
@@ -461,7 +461,7 @@ mlxModel.addEventListener("change", persistSettings);
 mlxPython.addEventListener("change", persistSettings);
 whisperModel.addEventListener("change", persistSettings);
 
-function persistSettings() {
+async function persistSettings() {
 	if (!currentSettings) return;
 	currentSettings.openrouterKey = openrouterKey.value;
 	currentSettings.openrouterModel = openrouterModel.value;
@@ -469,7 +469,15 @@ function persistSettings() {
 	currentSettings.mlxPythonPath = mlxPython.value.trim() || "python3";
 	mlxPython.value = currentSettings.mlxPythonPath;
 	currentSettings.whisperModel = whisperModel.value;
-	electrobun.rpc!.request.saveSettings(currentSettings);
+
+	const result = await electrobun.rpc!.request.saveSettings(currentSettings);
+	if (!result.success && result.error) {
+		console.error(result.error);
+		showAIStatus(result.error);
+		setTimeout(() => {
+			hideAIStatus();
+		}, 4000);
+	}
 }
 
 // ─── Hotkeys UI ───

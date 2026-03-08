@@ -47,6 +47,10 @@ type Settings = {
 };
 
 type PersistedSettings = Omit<Settings, "openrouterKey">;
+type SaveSettingsResult = { success: boolean; error?: string };
+
+const OPENROUTER_KEYCHAIN_SERVICE = "com.buddywriter.openrouter";
+const OPENROUTER_KEYCHAIN_ACCOUNT = "default";
 
 const defaultSettings: Settings = {
 	provider: "openrouter",
@@ -91,6 +95,234 @@ function saveSettings(s: Settings) {
 }
 
 let settings = loadSettings();
+
+function decodeCommandOutput(output: string | Uint8Array | null | undefined) {
+	if (!output) return "";
+	if (typeof output === "string") return output.trim();
+	return new TextDecoder().decode(output).trim();
+}
+
+function hasCommand(command: string) {
+	const result = Bun.spawnSync({
+		cmd: ["which", command],
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+
+	return result.exitCode === 0;
+}
+
+function loadOpenRouterKeyFromSecureStorage() {
+	switch (process.platform) {
+		case "darwin": {
+			const result = Bun.spawnSync({
+				cmd: [
+					"security",
+					"find-generic-password",
+					"-s",
+					OPENROUTER_KEYCHAIN_SERVICE,
+					"-a",
+					OPENROUTER_KEYCHAIN_ACCOUNT,
+					"-w",
+				],
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const stderr = decodeCommandOutput(result.stderr);
+
+			if (result.exitCode === 0) {
+				return { ok: true, supported: true, value: decodeCommandOutput(result.stdout) };
+			}
+
+			if (stderr.includes("could not be found")) {
+				return { ok: true, supported: true, value: "" };
+			}
+
+			return {
+				ok: false,
+				supported: true,
+				value: "",
+				error: stderr || "Unable to read the OpenRouter API key from macOS Keychain.",
+			};
+		}
+		case "linux": {
+			if (!hasCommand("secret-tool")) {
+				return { ok: false, supported: false, value: "" };
+			}
+
+			const result = Bun.spawnSync({
+				cmd: [
+					"secret-tool",
+					"lookup",
+					"service",
+					OPENROUTER_KEYCHAIN_SERVICE,
+					"account",
+					OPENROUTER_KEYCHAIN_ACCOUNT,
+				],
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const stderr = decodeCommandOutput(result.stderr);
+
+			if (result.exitCode === 0) {
+				return { ok: true, supported: true, value: decodeCommandOutput(result.stdout) };
+			}
+
+			if (result.exitCode === 1 && !stderr) {
+				return { ok: true, supported: true, value: "" };
+			}
+
+			return {
+				ok: false,
+				supported: true,
+				value: "",
+				error: stderr || "Unable to read the OpenRouter API key from the system secret store.",
+			};
+		}
+		default:
+			return { ok: false, supported: false, value: "" };
+	}
+}
+
+function saveOpenRouterKeyToSecureStorage(value: string) {
+	switch (process.platform) {
+		case "darwin": {
+			if (!value.trim()) {
+				const deleteResult = Bun.spawnSync({
+					cmd: [
+						"security",
+						"delete-generic-password",
+						"-s",
+						OPENROUTER_KEYCHAIN_SERVICE,
+						"-a",
+						OPENROUTER_KEYCHAIN_ACCOUNT,
+					],
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				const stderr = decodeCommandOutput(deleteResult.stderr);
+				if (deleteResult.exitCode === 0 || stderr.includes("could not be found")) {
+					return { ok: true, supported: true };
+				}
+
+				return {
+					ok: false,
+					supported: true,
+					error: stderr || "Unable to clear the OpenRouter API key from macOS Keychain.",
+				};
+			}
+
+			const saveResult = Bun.spawnSync({
+				cmd: [
+					"security",
+					"add-generic-password",
+					"-U",
+					"-s",
+					OPENROUTER_KEYCHAIN_SERVICE,
+					"-a",
+					OPENROUTER_KEYCHAIN_ACCOUNT,
+					"-w",
+					value,
+				],
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const stderr = decodeCommandOutput(saveResult.stderr);
+
+			if (saveResult.exitCode === 0) {
+				return { ok: true, supported: true };
+			}
+
+			return {
+				ok: false,
+				supported: true,
+				error: stderr || "Unable to store the OpenRouter API key in macOS Keychain.",
+			};
+		}
+		case "linux": {
+			if (!hasCommand("secret-tool")) {
+				return { ok: false, supported: false, error: "Install `secret-tool` to persist the OpenRouter API key securely." };
+			}
+
+			if (!value.trim()) {
+				const clearResult = Bun.spawnSync({
+					cmd: [
+						"secret-tool",
+						"clear",
+						"service",
+						OPENROUTER_KEYCHAIN_SERVICE,
+						"account",
+						OPENROUTER_KEYCHAIN_ACCOUNT,
+					],
+					stdout: "pipe",
+					stderr: "pipe",
+				});
+				const stderr = decodeCommandOutput(clearResult.stderr);
+
+				if (clearResult.exitCode === 0 || clearResult.exitCode === 1) {
+					return { ok: true, supported: true };
+				}
+
+				return {
+					ok: false,
+					supported: true,
+					error: stderr || "Unable to clear the OpenRouter API key from the system secret store.",
+				};
+			}
+
+			const saveResult = Bun.spawnSync({
+				cmd: [
+					"secret-tool",
+					"store",
+					"--label=BuddyWriter OpenRouter API Key",
+					"service",
+					OPENROUTER_KEYCHAIN_SERVICE,
+					"account",
+					OPENROUTER_KEYCHAIN_ACCOUNT,
+				],
+				stdin: new TextEncoder().encode(value),
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const stderr = decodeCommandOutput(saveResult.stderr);
+
+			if (saveResult.exitCode === 0) {
+				return { ok: true, supported: true };
+			}
+
+			return {
+				ok: false,
+				supported: true,
+				error: stderr || "Unable to store the OpenRouter API key in the system secret store.",
+			};
+		}
+		default:
+			if (!value.trim()) {
+				return { ok: true, supported: false };
+			}
+
+			return {
+				ok: false,
+				supported: false,
+				error: "Secure API key persistence is not implemented on this platform yet.",
+			};
+	}
+}
+
+function syncOpenRouterKeyFromSecureStorage() {
+	const envKey = Bun.env.OPENROUTER_API_KEY?.trim();
+	if (envKey) {
+		settings.openrouterKey = envKey;
+		return;
+	}
+
+	const result = loadOpenRouterKeyFromSecureStorage();
+	if (result.ok) {
+		settings.openrouterKey = result.value ?? "";
+	}
+}
+
+syncOpenRouterKeyFromSecureStorage();
 
 // ─── MLX Sidecar ───
 const MLX_PORT = 8079;
@@ -352,6 +584,7 @@ async function callAI(systemPrompt: string, userMessage: string): Promise<string
 }
 
 async function callOpenRouter(systemPrompt: string, userMessage: string): Promise<string> {
+	syncOpenRouterKeyFromSecureStorage();
 	if (!settings.openrouterKey.trim()) {
 		throw new Error("OpenRouter API key is missing. Set OPENROUTER_API_KEY or enter a key in Settings for this session.");
 	}
@@ -414,14 +647,14 @@ type WriterRPC = {
 				params: { text: string };
 				response: { html: string };
 			};
-			getSettings: {
-				params: {};
-				response: Settings;
-			};
-			saveSettings: {
-				params: Settings;
-				response: { success: boolean };
-			};
+				getSettings: {
+					params: {};
+					response: Settings;
+				};
+				saveSettings: {
+					params: Settings;
+					response: SaveSettingsResult;
+				};
 			startMLXServer: {
 				params: { model: string; pythonPath: string };
 				response: { success: boolean; error?: string };
@@ -482,15 +715,26 @@ const writerRPC = BrowserView.defineRPC<WriterRPC>({
 				renderMarkdown: ({ text }: { text: string }) => {
 					return { html: Bun.markdown.html(escapeMarkdownHtml(text)) };
 				},
-			getSettings: () => {
-				return settings;
-			},
-			saveSettings: (newSettings: Settings) => {
-				settings = { ...settings, ...newSettings };
-				settings.mlxPythonPath = normalizePythonPath(settings.mlxPythonPath);
-				saveSettings(settings);
-				return { success: true };
-			},
+				getSettings: async () => {
+					syncOpenRouterKeyFromSecureStorage();
+					return settings;
+				},
+				saveSettings: (newSettings: Settings) => {
+					settings = { ...settings, ...newSettings };
+					settings.mlxPythonPath = normalizePythonPath(settings.mlxPythonPath);
+					const secureStoreResult = saveOpenRouterKeyToSecureStorage(settings.openrouterKey);
+					saveSettings(settings);
+
+					if (!secureStoreResult.ok) {
+						return {
+							success: false,
+							error: secureStoreResult.error ?? "Unable to persist the OpenRouter API key securely.",
+						};
+					}
+
+					syncOpenRouterKeyFromSecureStorage();
+					return { success: true };
+				},
 			startMLXServer: async ({ model, pythonPath }: { model: string; pythonPath: string }) => {
 				const result = await startMLX(model, pythonPath);
 				if (result.ok) {
