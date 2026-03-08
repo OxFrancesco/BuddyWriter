@@ -700,20 +700,34 @@ body {
 	padding: 0;
 	border: 1px solid transparent;
 	border-radius: 8px;
+	appearance: none;
+	-webkit-appearance: none;
 	background: transparent;
 	color: var(--text-dim);
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	cursor: pointer;
+	flex-shrink: 0;
 	opacity: 0;
-	transition: opacity 0.2s ease, background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+	visibility: hidden;
+	pointer-events: none;
+	transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.workspace-tree__file-menu svg {
+	display: block;
+	width: 14px;
+	height: 14px;
+	pointer-events: none;
 }
 
 .workspace-tree__file-row:hover .workspace-tree__file-menu,
 .workspace-tree__file-row.menu-open .workspace-tree__file-menu,
 .workspace-tree__file.active + .workspace-tree__file-menu {
 	opacity: 1;
+	visibility: visible;
+	pointer-events: auto;
 }
 
 .workspace-tree__file-menu:hover,
@@ -764,20 +778,100 @@ body {
 	color: var(--text-dim);
 }
 
-.workspace-tree__file-settings {
-	margin: 6px 0 10px 24px;
-	padding: 10px;
+.workspace-note-inspector {
+	padding: 12px;
 	border-radius: 12px;
 	border: 1px solid rgba(148, 163, 184, 0.1);
 	background: rgba(255, 255, 255, 0.03);
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
+	gap: 12px;
 }
 
-.workspace-tree__file-settings input,
-.workspace-tree__file-settings select,
-.workspace-tree__file-settings button {
+.workspace-note-inspector__header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.workspace-note-inspector__heading {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.workspace-note-inspector__eyebrow,
+.workspace-note-inspector__label {
+	font-family: var(--font-mono);
+	font-size: 10px;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--text-dim);
+}
+
+.workspace-note-inspector__path,
+.workspace-note-inspector__hint,
+.workspace-note-inspector__discard-text {
+	font-size: 11.5px;
+	line-height: 1.45;
+	color: var(--text-muted);
+}
+
+.workspace-note-inspector__path {
+	font-family: var(--font-mono);
+	word-break: break-word;
+}
+
+.workspace-note-inspector__close,
+.workspace-note-inspector__button {
+	border-radius: 8px;
+	border: 1px solid var(--border);
+	background: rgba(255, 255, 255, 0.03);
+	color: var(--text);
+	font-family: var(--font-sans);
+	font-size: 12px;
+	transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease, opacity 0.2s ease;
+}
+
+.workspace-note-inspector__close {
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	appearance: none;
+	-webkit-appearance: none;
+	cursor: pointer;
+	flex-shrink: 0;
+}
+
+.workspace-note-inspector__close svg {
+	display: block;
+	width: 14px;
+	height: 14px;
+	pointer-events: none;
+}
+
+.workspace-note-inspector__form {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.workspace-note-inspector__field {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.workspace-note-inspector__field input,
+.workspace-note-inspector__field select {
+	width: 100%;
+	padding: 8px 10px;
+	outline: none;
 	border-radius: 8px;
 	border: 1px solid var(--border);
 	background: rgba(255, 255, 255, 0.03);
@@ -786,41 +880,79 @@ body {
 	font-size: 12px;
 }
 
-.workspace-tree__file-settings input,
-.workspace-tree__file-settings select {
-	width: 100%;
-	padding: 8px 10px;
-	outline: none;
-}
-
-.workspace-tree__file-settings input::placeholder {
+.workspace-note-inspector__field input::placeholder {
 	color: var(--text-dim);
 }
 
-.workspace-tree__file-settings input:focus,
-.workspace-tree__file-settings select:focus {
+.workspace-note-inspector__field input:focus,
+.workspace-note-inspector__field select:focus,
+.workspace-note-inspector__close:focus-visible,
+.workspace-note-inspector__button:focus-visible {
 	border-color: rgba(148, 163, 184, 0.28);
 	background: rgba(255, 255, 255, 0.05);
+	outline: none;
 }
 
-.workspace-tree__file-settings-row {
+.workspace-note-inspector__actions,
+.workspace-note-inspector__discard-actions,
+.workspace-note-inspector__archive {
 	display: flex;
 	gap: 8px;
 }
 
-.workspace-tree__file-settings select {
-	flex: 1;
+.workspace-note-inspector__actions,
+.workspace-note-inspector__discard-actions {
+	flex-wrap: wrap;
 }
 
-.workspace-tree__file-settings button {
+.workspace-note-inspector__button {
 	padding: 8px 10px;
 	cursor: pointer;
-	transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 
-.workspace-tree__file-settings button:hover {
+.workspace-note-inspector__button.primary {
+	border-color: rgba(125, 211, 252, 0.2);
+	background: rgba(56, 189, 248, 0.14);
+}
+
+.workspace-note-inspector__button.danger {
+	border-color: rgba(248, 113, 113, 0.2);
+	color: #fecaca;
+}
+
+.workspace-note-inspector__close:hover,
+.workspace-note-inspector__button:hover {
 	background: rgba(255, 255, 255, 0.08);
 	border-color: rgba(148, 163, 184, 0.24);
+}
+
+.workspace-note-inspector__button:disabled,
+.workspace-note-inspector__close:disabled,
+.workspace-note-inspector__field input:disabled,
+.workspace-note-inspector__field select:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.workspace-note-inspector__discard {
+	padding-top: 10px;
+	border-top: 1px solid rgba(148, 163, 184, 0.08);
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.workspace-note-inspector__archive {
+	padding-top: 10px;
+	border-top: 1px solid rgba(148, 163, 184, 0.08);
+	align-items: flex-start;
+	justify-content: space-between;
+}
+
+.workspace-note-inspector__archive-copy {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
 }
 
 .editor-stage {
@@ -852,6 +984,26 @@ body {
 	letter-spacing: -0.02em;
 	line-height: 1.1;
 	color: var(--text);
+	margin: 0;
+}
+
+.document-title.editable {
+	cursor: text;
+}
+
+.document-title-input {
+	width: min(100%, 28rem);
+	padding: 0;
+	border: none;
+	border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+	background: transparent;
+	color: var(--text);
+	font-family: var(--font-sans);
+	font-size: 24px;
+	font-weight: 300;
+	letter-spacing: -0.02em;
+	line-height: 1.1;
+	outline: none;
 }
 
 .document-meta {

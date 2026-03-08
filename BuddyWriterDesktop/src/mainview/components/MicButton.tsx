@@ -17,6 +17,11 @@ export function MicButton(props: MicButtonProps): React.ReactElement {
 	const { anchor, isRecording, isTranscribing, onMouseDown, onMouseLeave, onMouseUp, statusText } = props;
 	const lottieRef = useRef<HTMLDivElement | null>(null);
 	const animationRef = useRef<ReturnType<typeof lottie.loadAnimation> | null>(null);
+	const buttonLabel = isRecording
+		? "Stop voice input"
+		: statusText === "allow mic"
+			? "Allow microphone access"
+			: "Start voice input";
 
 	useEffect(() => {
 		if (!lottieRef.current) return;
@@ -61,8 +66,10 @@ export function MicButton(props: MicButtonProps): React.ReactElement {
 				isTranscribing ? "transcribing" : "",
 			].filter(Boolean).join(" ")}
 			style={{ left: `${anchor.left}px`, top: `${anchor.top}px` }}
-			title="Voice input"
+			title={buttonLabel}
 			type="button"
+			aria-label={buttonLabel}
+			aria-pressed={isRecording}
 			onMouseDown={onMouseDown}
 			onMouseLeave={onMouseLeave}
 			onMouseUp={onMouseUp}

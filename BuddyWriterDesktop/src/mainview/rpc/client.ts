@@ -66,6 +66,9 @@ export const rpcClient = {
 	moveDocument(params: WriterBunRequestMap["moveDocument"]["params"]) {
 		return getRequestClient().moveDocument(params);
 	},
+	openMicrophoneSystemSettings(params: WriterBunRequestMap["openMicrophoneSystemSettings"]["params"]) {
+		return getRequestClient().openMicrophoneSystemSettings(params);
+	},
 	openDocument(params: WriterBunRequestMap["openDocument"]["params"]) {
 		return getRequestClient().openDocument(params);
 	},
@@ -83,6 +86,9 @@ export const rpcClient = {
 	},
 	renameDocument(params: WriterBunRequestMap["renameDocument"]["params"]) {
 		return getRequestClient().renameDocument(params);
+	},
+	updateDocumentMetadata(params: WriterBunRequestMap["updateDocumentMetadata"]["params"]) {
+		return getRequestClient().updateDocumentMetadata(params);
 	},
 	saveDocument(params: WriterBunRequestMap["saveDocument"]["params"]) {
 		return getRequestClient().saveDocument(params);

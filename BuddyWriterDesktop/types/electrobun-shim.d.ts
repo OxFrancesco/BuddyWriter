@@ -73,6 +73,7 @@ declare module "electrobun/bun" {
 	};
 
 	export const Utils: {
+		openExternal: (url: string) => boolean;
 		paths: {
 			userData: string;
 		};

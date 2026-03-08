@@ -1,4 +1,5 @@
-import { BrowserView, type RPCSchema } from "electrobun/bun";
+import { BrowserView, Utils, type RPCSchema } from "electrobun/bun";
+import { platform } from "node:os";
 import type { WriterBunRequestMap, WriterContract } from "../../shared/rpc/writer-contract";
 import type { CatalogService } from "../local-ai/catalog-service";
 import type { LocalAIInstaller } from "../local-ai/installer";
@@ -38,6 +39,17 @@ export function createWriterRPC(options: {
 		onWorkspaceChanged,
 		muteWorkspaceWatcher,
 	} = options;
+
+	function openMicrophoneSystemSettings(): boolean {
+		switch (platform()) {
+			case "darwin":
+				return Utils.openExternal("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone");
+			case "win32":
+				return Utils.openExternal("ms-settings:privacy-microphone");
+			default:
+				return false;
+		}
+	}
 
 	return BrowserView.defineRPC<WriterRPC>({
 		maxRequestTime: 180000,
@@ -95,6 +107,10 @@ export function createWriterRPC(options: {
 					muteWorkspaceWatcher();
 					return workspaceService.createWorkspaceFolder(parentRelativePath, name);
 				},
+				updateDocumentMetadata: ({ relativePath, title, labels, targetParentRelativePath }: WriterBunRequestMap["updateDocumentMetadata"]["params"]) => {
+					muteWorkspaceWatcher();
+					return workspaceService.updateWorkspaceDocumentMetadata(relativePath, title, labels, targetParentRelativePath);
+				},
 				renameDocument: ({ relativePath, title }: WriterBunRequestMap["renameDocument"]["params"]) => {
 					muteWorkspaceWatcher();
 					return workspaceService.renameWorkspaceDocument(relativePath, title);
@@ -137,6 +153,9 @@ export function createWriterRPC(options: {
 				transcribeAudio: async ({ audioPath, audioMimeType, language }: WriterBunRequestMap["transcribeAudio"]["params"]) => {
 					const text = await speechService.transcribeAudio(audioPath, language, audioMimeType);
 					return { text };
+				},
+				openMicrophoneSystemSettings: () => {
+					return { opened: openMicrophoneSystemSettings() };
 				},
 				speakText: async ({ text }: WriterBunRequestMap["speakText"]["params"]) => {
 					const result = await speechService.speakText(text);

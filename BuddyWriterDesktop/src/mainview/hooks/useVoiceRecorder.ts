@@ -1,7 +1,15 @@
 import { useEffect, useRef, useState } from "react";
+import type { EditorSurfaceHandle, MicAnchor } from "../components/EditorSurface";
 import { rpcClient } from "../rpc/client";
 import { arrayBufferToBase64, encodeWav } from "../utils/audio";
-import type { EditorSurfaceHandle, MicAnchor } from "../components/EditorSurface";
+import {
+	classifyMicrophoneAccessError,
+	getMicrophoneAccessStatusMessage,
+	getMicrophonePermissionState,
+	queryMicrophonePermissionStatus,
+	type MicrophoneAccessIssue,
+	type MicrophonePermissionState,
+} from "../utils/microphone-permissions";
 import { useEventCallback } from "./useEventCallback";
 
 type VoiceRecorderOptions = {
@@ -11,6 +19,11 @@ type VoiceRecorderOptions = {
 	showStatusMessage: (message: string) => void;
 };
 
+type PermissionDialogState = {
+	issue: MicrophoneAccessIssue;
+	openingSystemSettings: boolean;
+};
+
 export function useVoiceRecorder(options: VoiceRecorderOptions) {
 	const { editorRef, ensureVoiceInputReady, hideStatusMessage, showStatusMessage } = options;
 	const [anchor, setAnchor] = useState<MicAnchor>({ left: 0, top: 0, visible: false });
@@ -18,9 +31,14 @@ export function useVoiceRecorder(options: VoiceRecorderOptions) {
 	const [isTranscribing, setIsTranscribing] = useState(false);
 	const [statusText, setStatusText] = useState("");
 	const [voiceClipboard, setVoiceClipboard] = useState("");
+	const [microphonePermissionState, setMicrophonePermissionState] = useState<MicrophonePermissionState>("unsupported");
+	const [permissionDialog, setPermissionDialog] = useState<PermissionDialogState | null>(null);
 	const isRecordingRef = useRef(false);
 	const holdModeRef = useRef(false);
 	const holdTimerRef = useRef<number | null>(null);
+	const microphonePermissionStatusRef = useRef<PermissionStatus | null>(null);
+	const microphonePermissionChangeHandlerRef = useRef<(() => void) | null>(null);
+	const startRecordingInFlightRef = useRef(false);
 	const recordingContextRef = useRef<AudioContext | null>(null);
 	const recordingStreamRef = useRef<MediaStream | null>(null);
 	const recordingSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -28,6 +46,13 @@ export function useVoiceRecorder(options: VoiceRecorderOptions) {
 	const recordingSilenceRef = useRef<GainNode | null>(null);
 	const recordedChunksRef = useRef<Float32Array[]>([]);
 	const recordedSampleRateRef = useRef(44100);
+
+	const clearHoldTimer = useEventCallback(() => {
+		if (holdTimerRef.current) {
+			window.clearTimeout(holdTimerRef.current);
+			holdTimerRef.current = null;
+		}
+	});
 
 	const clearRecordingResources = useEventCallback(() => {
 		recordingSourceRef.current?.disconnect();
@@ -40,6 +65,46 @@ export function useVoiceRecorder(options: VoiceRecorderOptions) {
 		recordingSilenceRef.current = null;
 		recordingStreamRef.current = null;
 		recordingContextRef.current = null;
+	});
+
+	const syncMicrophonePermissionListener = useEventCallback((permissionStatus: PermissionStatus | null) => {
+		if (microphonePermissionStatusRef.current === permissionStatus) return;
+
+		if (microphonePermissionStatusRef.current && microphonePermissionChangeHandlerRef.current) {
+			microphonePermissionStatusRef.current.removeEventListener("change", microphonePermissionChangeHandlerRef.current);
+		}
+
+		microphonePermissionStatusRef.current = permissionStatus;
+		if (!permissionStatus) {
+			microphonePermissionChangeHandlerRef.current = null;
+			return;
+		}
+
+		const handlePermissionChange = () => {
+			void refreshMicrophonePermission();
+		};
+
+		microphonePermissionChangeHandlerRef.current = handlePermissionChange;
+		permissionStatus.addEventListener("change", handlePermissionChange);
+	});
+
+	const refreshMicrophonePermission = useEventCallback(async () => {
+		const permissionStatus = await queryMicrophonePermissionStatus();
+		const nextState = getMicrophonePermissionState(permissionStatus);
+		setMicrophonePermissionState(nextState);
+		syncMicrophonePermissionListener(permissionStatus);
+		if (nextState === "granted") {
+			setPermissionDialog((currentDialog) => currentDialog?.issue === "denied" ? null : currentDialog);
+		}
+		return nextState;
+	});
+
+	const showPermissionDialog = useEventCallback((issue: MicrophoneAccessIssue) => {
+		setPermissionDialog({
+			issue,
+			openingSystemSettings: false,
+		});
+		showStatusMessage(getMicrophoneAccessStatusMessage(issue));
 	});
 
 	const finishRecording = useEventCallback(async () => {
@@ -75,11 +140,22 @@ export function useVoiceRecorder(options: VoiceRecorderOptions) {
 		}
 	});
 
-	const startRecording = useEventCallback(async () => {
-		if (isRecording) return;
+	const startRecording = useEventCallback(async (permissionState: MicrophonePermissionState) => {
+		if (isRecording || startRecordingInFlightRef.current) return false;
 		editorRef.current?.saveCursorPosition();
+		startRecordingInFlightRef.current = true;
+
+		if (permissionState !== "granted") {
+			setStatusText("allow mic");
+			showStatusMessage("Allow microphone access to start dictation.");
+		}
 
 		try {
+			if (!navigator.mediaDevices?.getUserMedia) {
+				showPermissionDialog("unsupported");
+				return false;
+			}
+
 			recordingStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
 			recordingContextRef.current = new AudioContext();
 			recordedSampleRateRef.current = recordingContextRef.current.sampleRate;
@@ -101,12 +177,32 @@ export function useVoiceRecorder(options: VoiceRecorderOptions) {
 			isRecordingRef.current = true;
 			setIsRecording(true);
 			setStatusText("● rec");
+			hideStatusMessage();
+			setPermissionDialog(null);
+			void refreshMicrophonePermission();
+			return true;
 		} catch (error) {
+			const issue = classifyMicrophoneAccessError(error);
 			console.error("Mic access failed:", error);
-			setStatusText("mic denied");
+			if (issue === "denied") {
+				void refreshMicrophonePermission();
+				showPermissionDialog(issue);
+				return false;
+			}
+
+			if (issue === "missing-device" || issue === "busy" || issue === "unsupported") {
+				showPermissionDialog(issue);
+				return false;
+			}
+
+			setStatusText("mic error");
+			showStatusMessage(getMicrophoneAccessStatusMessage(issue));
 			window.setTimeout(() => {
 				setStatusText("");
-			}, 2000);
+			}, 2200);
+			return false;
+		} finally {
+			startRecordingInFlightRef.current = false;
 		}
 	});
 
@@ -118,6 +214,35 @@ export function useVoiceRecorder(options: VoiceRecorderOptions) {
 		void finishRecording();
 	});
 
+	const startMicSession = useEventCallback(async (options?: { armHoldMode?: boolean }) => {
+		if (isRecording || startRecordingInFlightRef.current) return false;
+		holdModeRef.current = false;
+		clearHoldTimer();
+
+		const voiceInputReady = await ensureVoiceInputReady(showStatusMessage);
+		if (!voiceInputReady) return false;
+
+		const permissionState = await refreshMicrophonePermission();
+		if (permissionState === "denied") {
+			showPermissionDialog("denied");
+			return false;
+		}
+
+		if (options?.armHoldMode) {
+			holdTimerRef.current = window.setTimeout(() => {
+				holdModeRef.current = true;
+			}, 200);
+		}
+
+		const recordingStarted = await startRecording(permissionState);
+		if (!recordingStarted) {
+			clearHoldTimer();
+			holdModeRef.current = false;
+		}
+
+		return recordingStarted;
+	});
+
 	const handleMouseDown = useEventCallback(async (event: React.MouseEvent<HTMLButtonElement>) => {
 		event.preventDefault();
 		if (isRecording) {
@@ -125,29 +250,70 @@ export function useVoiceRecorder(options: VoiceRecorderOptions) {
 			return;
 		}
 
-		holdModeRef.current = false;
-		const voiceInputReady = await ensureVoiceInputReady(showStatusMessage);
-		if (!voiceInputReady) return;
-
-		holdTimerRef.current = window.setTimeout(() => {
-			holdModeRef.current = true;
-		}, 200);
-		await startRecording();
+		await startMicSession({ armHoldMode: true });
 	});
 
 	const stopIfHolding = useEventCallback(() => {
-		if (holdTimerRef.current) {
-			window.clearTimeout(holdTimerRef.current);
-			holdTimerRef.current = null;
-		}
+		clearHoldTimer();
 		if (holdModeRef.current && isRecording) {
 			stopRecording();
+		}
+	});
+
+	const dismissPermissionDialog = useEventCallback(() => {
+		setPermissionDialog(null);
+		hideStatusMessage();
+	});
+
+	const retryMicrophoneAccess = useEventCallback(async () => {
+		setPermissionDialog(null);
+		hideStatusMessage();
+		await startMicSession();
+	});
+
+	const openMicrophoneSystemSettings = useEventCallback(async () => {
+		setPermissionDialog((currentDialog) => currentDialog ? {
+			...currentDialog,
+			openingSystemSettings: true,
+		} : currentDialog);
+
+		try {
+			const { opened } = await rpcClient.openMicrophoneSystemSettings({});
+			if (!opened) {
+				showStatusMessage("Open your system microphone settings and enable BuddyWriter.");
+			}
+		} finally {
+			setPermissionDialog((currentDialog) => currentDialog ? {
+				...currentDialog,
+				openingSystemSettings: false,
+			} : currentDialog);
 		}
 	});
 
 	useEffect(() => {
 		isRecordingRef.current = isRecording;
 	}, [isRecording]);
+
+	useEffect(() => {
+		void refreshMicrophonePermission();
+
+		const handleFocus = () => {
+			void refreshMicrophonePermission();
+		};
+		const handleVisibilityChange = () => {
+			if (!document.hidden) {
+				void refreshMicrophonePermission();
+			}
+		};
+
+		window.addEventListener("focus", handleFocus);
+		document.addEventListener("visibilitychange", handleVisibilityChange);
+		return () => {
+			window.removeEventListener("focus", handleFocus);
+			document.removeEventListener("visibilitychange", handleVisibilityChange);
+			syncMicrophonePermissionListener(null);
+		};
+	}, [refreshMicrophonePermission, syncMicrophonePermissionListener]);
 
 	useEffect(() => {
 		const handleVoiceClipboardPaste = (event: KeyboardEvent) => {
@@ -165,15 +331,21 @@ export function useVoiceRecorder(options: VoiceRecorderOptions) {
 		};
 	}, [editorRef, voiceClipboard]);
 
+	const passiveStatusText = microphonePermissionState === "denied" ? "allow mic" : "";
+
 	return {
 		anchor,
+		dismissPermissionDialog,
 		handleMouseDown,
 		handleMouseLeave: stopIfHolding,
 		handleMouseUp: stopIfHolding,
 		isRecording,
 		isTranscribing,
+		openMicrophoneSystemSettings,
+		permissionDialog,
+		retryMicrophoneAccess,
 		setAnchor,
-		statusText,
+		statusText: statusText || passiveStatusText,
 		voiceClipboard,
 	};
 }

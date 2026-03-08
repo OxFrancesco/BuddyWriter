@@ -25,6 +25,7 @@ export default {
 		},
 		mac: {
 			bundleCEF: false,
+			icons: "icon.iconset",
 			entitlements: {
 				"com.apple.security.device.audio-input":
 					"BuddyWriter needs microphone access to record and transcribe your voice.",
@@ -32,9 +33,11 @@ export default {
 		},
 		linux: {
 			bundleCEF: false,
+			icon: "public/logo.png",
 		},
 		win: {
 			bundleCEF: false,
+			icon: "public/logo.png",
 		},
 	},
 } satisfies ElectrobunConfig;

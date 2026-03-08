@@ -5,10 +5,8 @@ import { rpcClient } from "../rpc/client";
 
 type WorkspaceContextValue = {
 	activeDocument: WorkspaceDocument | null;
-	openNoteSettingsPath: string | null;
 	refreshWorkspace: () => Promise<WorkspaceState>;
 	setActiveDocumentContent: (content: string) => void;
-	setOpenNoteSettingsPath: (relativePath: string | null) => void;
 	setWorkspaceState: (state: WorkspaceState) => void;
 	workspaceState: WorkspaceState | null;
 };
@@ -22,7 +20,6 @@ type WorkspaceProviderProps = {
 export function WorkspaceProvider(props: WorkspaceProviderProps): React.ReactElement {
 	const { children } = props;
 	const [workspaceState, setWorkspaceStateState] = useState<WorkspaceState | null>(null);
-	const [openNoteSettingsPath, setOpenNoteSettingsPath] = useState<string | null>(null);
 
 	const setWorkspaceState = useEventCallback((state: WorkspaceState) => {
 		startTransition(() => {
@@ -57,13 +54,11 @@ export function WorkspaceProvider(props: WorkspaceProviderProps): React.ReactEle
 
 	const value = useMemo<WorkspaceContextValue>(() => ({
 		activeDocument: workspaceState?.activeDocument ?? null,
-		openNoteSettingsPath,
 		refreshWorkspace,
 		setActiveDocumentContent,
-		setOpenNoteSettingsPath,
 		setWorkspaceState,
 		workspaceState,
-	}), [openNoteSettingsPath, refreshWorkspace, setActiveDocumentContent, setWorkspaceState, workspaceState]);
+	}), [refreshWorkspace, setActiveDocumentContent, setWorkspaceState, workspaceState]);
 
 	return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

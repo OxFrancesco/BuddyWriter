@@ -1,40 +1,50 @@
+import { forwardRef, useImperativeHandle, useMemo } from "react";
 import type { WorkspaceDocument, WorkspaceTreeEntry } from "../../shared/models/workspace";
-import {
-	formatDirectoryOption,
-	getPathLeaf,
-	getSortedDirectoryEntries,
-	parseLabelsInput,
-} from "../utils/workspace";
+import { useNoteInspectorController } from "../hooks/useNoteInspectorController";
+import { getPathLeaf, getSortedDirectoryEntries } from "../utils/workspace";
+import { SidebarNoteInspector } from "./SidebarNoteInspector";
+
+export type SaveDocumentMetadataParams = {
+	relativePath: string;
+	title: string;
+	labels: string[];
+	targetParentRelativePath: string;
+};
+
+type ArchiveDocumentParams = {
+	relativePath: string;
+	archived: boolean;
+};
+
+export type WorkspaceSidebarHandle = {
+	handleEscape: () => boolean;
+};
 
 type WorkspaceSidebarProps = {
 	activeDocument: WorkspaceDocument | null;
-	directoryOptions?: string[];
-	onArchiveToggle: () => void;
+	onArchiveDocument: (params: ArchiveDocumentParams) => Promise<void>;
 	onCreateDocument: () => void;
 	onCreateFolder: () => void;
-	onLabelsSave: (labels: string[]) => void;
-	onMoveDocument: (targetParentRelativePath: string) => void;
-	onOpenDocument: (relativePath: string) => void;
-	onRenameDocument: (nextTitle: string) => void;
-	openNoteSettingsPath: string | null;
-	setOpenNoteSettingsPath: (relativePath: string | null) => void;
+	onOpenDocument: (relativePath: string) => Promise<void>;
+	onSaveDocumentMetadata: (params: SaveDocumentMetadataParams) => Promise<void>;
 	tree: WorkspaceTreeEntry[];
 	workspacePath: string;
 };
 
-type WorkspaceTreeProps = WorkspaceSidebarProps;
+type WorkspaceTreeProps = {
+	activeDocumentRelativePath: string | null;
+	inspectorDocumentRelativePath: string | null;
+	onOpenInspector: (relativePath: string) => Promise<void>;
+	onSelectDocument: (relativePath: string) => Promise<void>;
+	tree: WorkspaceTreeEntry[];
+};
 
 function WorkspaceTree(props: WorkspaceTreeProps): React.ReactElement {
 	const {
-		activeDocument,
-		directoryOptions = getSortedDirectoryEntries(props.tree),
-		onArchiveToggle,
-		onLabelsSave,
-		onMoveDocument,
-		onOpenDocument,
-		onRenameDocument,
-		openNoteSettingsPath,
-		setOpenNoteSettingsPath,
+		activeDocumentRelativePath,
+		inspectorDocumentRelativePath,
+		onOpenInspector,
+		onSelectDocument,
 		tree,
 	} = props;
 
@@ -49,38 +59,44 @@ function WorkspaceTree(props: WorkspaceTreeProps): React.ReactElement {
 								<span>{entry.name}</span>
 							</div>
 							<div className="workspace-tree__children">
-								<WorkspaceTree {...props} directoryOptions={directoryOptions} tree={entry.children ?? []} />
+								<WorkspaceTree
+									activeDocumentRelativePath={activeDocumentRelativePath}
+									inspectorDocumentRelativePath={inspectorDocumentRelativePath}
+									onOpenInspector={onOpenInspector}
+									onSelectDocument={onSelectDocument}
+									tree={entry.children ?? []}
+								/>
 							</div>
 						</div>
 					);
 				}
 
-				const settingsOpen = entry.relativePath === openNoteSettingsPath && activeDocument?.relativePath === entry.relativePath;
-				return (
-					<div key={entry.relativePath}>
-						<div className={`workspace-tree__file-row ${entry.relativePath === openNoteSettingsPath ? "menu-open" : ""}`}>
-							<button
-								type="button"
-								className={`workspace-tree__file ${entry.relativePath === activeDocument?.relativePath ? "active" : ""}`}
-								onClick={() => {
-									setOpenNoteSettingsPath(null);
-									onOpenDocument(entry.relativePath);
-								}}
-							>
-								<span className="workspace-tree__icon">MD</span>
-								<span className="workspace-tree__file-label">{entry.name.replace(/\.md$/i, "")}</span>
-							</button>
-							<button
+				const isActive = entry.relativePath === activeDocumentRelativePath;
+				const isInspectorOpen = entry.relativePath === inspectorDocumentRelativePath;
+
+					return (
+						<div key={entry.relativePath}>
+							<div className={`workspace-tree__file-row ${isInspectorOpen ? "menu-open" : ""}`}>
+								<button
+									type="button"
+									className={`workspace-tree__file ${isActive ? "active" : ""}`}
+									aria-label={`Open note ${entry.name.replace(/\.md$/i, "")}`}
+									onClick={() => {
+										void onSelectDocument(entry.relativePath);
+									}}
+								>
+									<span className="workspace-tree__icon">MD</span>
+									<span className="workspace-tree__file-label">{entry.name.replace(/\.md$/i, "")}</span>
+								</button>
+								<button
 								type="button"
 								className="workspace-tree__file-menu"
 								aria-label={`Note settings for ${entry.name.replace(/\.md$/i, "")}`}
+								onMouseDown={(event) => {
+									event.preventDefault();
+								}}
 								onClick={() => {
-									if (openNoteSettingsPath === entry.relativePath) {
-										setOpenNoteSettingsPath(null);
-										return;
-									}
-									setOpenNoteSettingsPath(entry.relativePath);
-									onOpenDocument(entry.relativePath);
+									void onOpenInspector(entry.relativePath);
 								}}
 							>
 								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -89,66 +105,6 @@ function WorkspaceTree(props: WorkspaceTreeProps): React.ReactElement {
 								</svg>
 							</button>
 						</div>
-						{settingsOpen ? (
-							<div className="workspace-tree__file-settings">
-								<input
-									type="text"
-									defaultValue={activeDocument?.title}
-									placeholder="Untitled"
-									spellCheck={false}
-									onBlur={(event) => {
-										onRenameDocument(event.currentTarget.value);
-									}}
-									onKeyDown={(event) => {
-										if (event.key === "Enter") {
-											event.preventDefault();
-											onRenameDocument(event.currentTarget.value);
-										}
-									}}
-								/>
-								<input
-									type="text"
-									defaultValue={activeDocument?.labels.join(", ")}
-									placeholder="Labels: draft, ideas"
-									spellCheck={false}
-									onBlur={(event) => {
-										onLabelsSave(parseLabelsInput(event.currentTarget.value));
-									}}
-									onKeyDown={(event) => {
-										if (event.key === "Enter") {
-											event.preventDefault();
-											onLabelsSave(parseLabelsInput(event.currentTarget.value));
-										}
-									}}
-								/>
-								<div className="workspace-tree__file-settings-row">
-									<select
-										defaultValue={activeDocument?.parentRelativePath || directoryOptions[0] || ""}
-										onChange={(event) => {
-											onMoveDocument(event.currentTarget.value);
-										}}
-									>
-										{directoryOptions.map((relativePath) => (
-											<option key={relativePath} value={relativePath}>
-												{formatDirectoryOption(relativePath)}
-											</option>
-										))}
-									</select>
-									<button type="button" onClick={(event) => {
-										const select = event.currentTarget.parentElement?.querySelector("select");
-										if (select instanceof HTMLSelectElement) {
-											onMoveDocument(select.value);
-										}
-									}}
-									>
-										Move
-									</button>
-								</div>
-								<button type="button" onClick={onArchiveToggle}>
-									{activeDocument?.isArchived ? "Unarchive" : "Archive"}
-								</button>
-							</div>
-						) : null}
 					</div>
 				);
 			})}
@@ -156,14 +112,31 @@ function WorkspaceTree(props: WorkspaceTreeProps): React.ReactElement {
 	);
 }
 
-export function WorkspaceSidebar(props: WorkspaceSidebarProps): React.ReactElement {
+export const WorkspaceSidebar = forwardRef<WorkspaceSidebarHandle, WorkspaceSidebarProps>(function WorkspaceSidebar(props, ref) {
 	const {
+		activeDocument,
+		onArchiveDocument,
 		onCreateDocument,
 		onCreateFolder,
+		onOpenDocument,
+		onSaveDocumentMetadata,
 		tree,
 		workspacePath,
 	} = props;
-	const directoryOptions = getSortedDirectoryEntries(tree);
+	const directoryOptions = useMemo(
+		() => getSortedDirectoryEntries(tree).filter((relativePath) => relativePath !== "Archive"),
+		[tree],
+	);
+	const inspector = useNoteInspectorController({
+		activeDocument,
+		onArchiveDocument,
+		onOpenDocument,
+		onSaveDocumentMetadata,
+	});
+
+	useImperativeHandle(ref, () => ({
+		handleEscape: inspector.handleEscape,
+	}), [inspector.handleEscape]);
 
 	return (
 		<aside className="workspace-sidebar">
@@ -172,6 +145,7 @@ export function WorkspaceSidebar(props: WorkspaceSidebarProps): React.ReactEleme
 				<div className="workspace-sidebar__name">{getPathLeaf(workspacePath)}</div>
 				<div className="workspace-sidebar__path">{workspacePath}</div>
 			</div>
+
 			<div className="workspace-sidebar__actions">
 				<button type="button" className="workspace-sidebar__action" onClick={onCreateDocument}>
 					New Note
@@ -180,13 +154,41 @@ export function WorkspaceSidebar(props: WorkspaceSidebarProps): React.ReactEleme
 					New Folder
 				</button>
 			</div>
+
+			{activeDocument && inspector.state.isOpen && inspector.state.draft ? (
+				<SidebarNoteInspector
+					activeDocument={activeDocument}
+					canSave={inspector.canSave}
+					directoryOptions={directoryOptions}
+					draft={inspector.state.draft}
+					isDirty={inspector.state.isDirty}
+					isSaving={inspector.state.isSaving}
+					onArchiveToggle={inspector.handleArchiveToggle}
+					onCancel={inspector.resetDraft}
+					onClose={inspector.closeInspector}
+					onConfirmDiscard={inspector.confirmDiscard}
+					onDismissDiscard={inspector.dismissDiscard}
+					onFolderChange={inspector.updateTargetParentRelativePath}
+					onLabelsChange={inspector.updateLabelsInput}
+					onSave={inspector.saveDraft}
+					onTitleChange={inspector.updateTitle}
+					showDiscardConfirm={Boolean(inspector.state.discardIntent)}
+				/>
+			) : null}
+
 			<div className="workspace-tree">
 				{tree.length === 0 ? (
 					<div className="workspace-tree__empty">No notes yet. Create one from the sidebar.</div>
 				) : (
-					<WorkspaceTree {...props} directoryOptions={directoryOptions} />
+					<WorkspaceTree
+						activeDocumentRelativePath={activeDocument?.relativePath ?? null}
+						inspectorDocumentRelativePath={inspector.inspectorDocumentRelativePath}
+						onOpenInspector={inspector.openInspectorForDocument}
+						onSelectDocument={inspector.selectDocument}
+						tree={tree}
+					/>
 				)}
 			</div>
 		</aside>
 	);
-}
+});

@@ -53,6 +53,15 @@ export type WriterBunRequestMap = {
 		params: { parentRelativePath?: string; name?: string };
 		response: WorkspaceState;
 	};
+	updateDocumentMetadata: {
+		params: {
+			relativePath: string;
+			title: string;
+			labels: string[];
+			targetParentRelativePath: string;
+		};
+		response: WorkspaceState;
+	};
 	renameDocument: {
 		params: { relativePath: string; title: string };
 		response: WorkspaceState;
@@ -100,6 +109,10 @@ export type WriterBunRequestMap = {
 	transcribeAudio: {
 		params: { audioPath: string; audioMimeType?: string; language?: string };
 		response: { text: string };
+	};
+	openMicrophoneSystemSettings: {
+		params: {};
+		response: { opened: boolean };
 	};
 	speakText: {
 		params: { text: string };

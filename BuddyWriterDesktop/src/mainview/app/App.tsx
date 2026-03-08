@@ -5,9 +5,10 @@ import { ChatPanel, type ChatPanelMessage } from "../components/ChatPanel";
 import { DocumentHeader } from "../components/DocumentHeader";
 import { EditorSurface, type EditorSurfaceHandle } from "../components/EditorSurface";
 import { MicButton } from "../components/MicButton";
+import { MicrophonePermissionModal } from "../components/MicrophonePermissionModal";
 import { SettingsPanel } from "../components/SettingsPanel";
 import { StatusBar } from "../components/StatusBar";
-import { WorkspaceSidebar } from "../components/WorkspaceSidebar";
+import { WorkspaceSidebar, type WorkspaceSidebarHandle } from "../components/WorkspaceSidebar";
 import { useAutosave } from "../hooks/useAutosave";
 import { useEventCallback } from "../hooks/useEventCallback";
 import { useGlobalShortcuts } from "../hooks/useGlobalShortcuts";
@@ -16,7 +17,7 @@ import { menuCommandBus } from "../ipc/menu-command-bus";
 import { useSettingsContext, SettingsProvider } from "../providers/SettingsProvider";
 import { useWorkspaceContext, WorkspaceProvider } from "../providers/WorkspaceProvider";
 import { rpcClient } from "../rpc/client";
-import { getParentRelativePath } from "../utils/workspace";
+import { getParentRelativePath, parseLabelsInput } from "../utils/workspace";
 
 function sameLabels(left: string[], right: string[]): boolean {
 	return left.length === right.length && left.every((label, index) => label === right[index]);
@@ -28,17 +29,17 @@ function createChatMessageId(): string {
 
 function AppShell(): React.ReactElement {
 	const editorRef = useRef<EditorSurfaceHandle | null>(null);
+	const workspaceSidebarRef = useRef<WorkspaceSidebarHandle | null>(null);
 	const audioRef = useRef<HTMLAudioElement | null>(null);
 	const statusTimerRef = useRef<number | null>(null);
 	const workspaceRefreshTimerRef = useRef<number | null>(null);
 	const documentActionInFlightRef = useRef<Promise<void> | null>(null);
+	const openDocumentRequestIdRef = useRef(0);
 	const currentSpeechAudioPathRef = useRef<string | null>(null);
 	const {
 		activeDocument,
-		openNoteSettingsPath,
 		refreshWorkspace,
 		setActiveDocumentContent,
-		setOpenNoteSettingsPath,
 		setWorkspaceState,
 		workspaceState,
 	} = useWorkspaceContext();
@@ -51,6 +52,7 @@ function AppShell(): React.ReactElement {
 		settingsOpen,
 		syncWorkspacePath,
 	} = useSettingsContext();
+	const workspaceStateRef = useRef(workspaceState);
 	const [aiStatus, setAIStatus] = useState("");
 	const [chatMessages, setChatMessages] = useState<ChatPanelMessage[]>([]);
 	const [chatOpen, setChatOpen] = useState(false);
@@ -88,10 +90,9 @@ function AppShell(): React.ReactElement {
 		}, durationMs);
 	});
 
-	const applyWorkspaceState = useEventCallback((state: WorkspaceState, nextOpenNoteSettingsPath: string | null = openNoteSettingsPath) => {
+	const applyWorkspaceState = useEventCallback((state: WorkspaceState) => {
 		setWorkspaceState(state);
 		syncWorkspacePath(state.workspacePath);
-		setOpenNoteSettingsPath(nextOpenNoteSettingsPath);
 		setEditorText(state.activeDocument?.content ?? "");
 	});
 
@@ -165,16 +166,21 @@ function AppShell(): React.ReactElement {
 
 	const openDocument = useEventCallback(async (relativePath: string) => {
 		await flushAutosave();
+		const requestId = openDocumentRequestIdRef.current + 1;
+		openDocumentRequestIdRef.current = requestId;
 		const document = await rpcClient.openDocument({ relativePath });
-		if (!workspaceState) {
+		if (openDocumentRequestIdRef.current !== requestId) return;
+
+		const currentWorkspaceState = workspaceStateRef.current;
+		if (!currentWorkspaceState) {
 			const state = await refreshWorkspace();
-			syncWorkspacePath(state.workspacePath);
-			setEditorText(state.activeDocument?.content ?? "");
+			if (openDocumentRequestIdRef.current !== requestId) return;
+			applyWorkspaceState(state);
 			return;
 		}
 
 		setWorkspaceState({
-			...workspaceState,
+			...currentWorkspaceState,
 			activeDocument: document,
 		});
 		setEditorText(document.content);
@@ -184,7 +190,7 @@ function AppShell(): React.ReactElement {
 		try {
 			await flushAutosave(true);
 			const state = await rpcClient.setWorkspacePath({ path });
-			applyWorkspaceState(state, null);
+			applyWorkspaceState(state);
 			setSaveStatus("saved", "Workspace ready");
 		} catch (error) {
 			console.error("Workspace change failed:", error);
@@ -206,7 +212,7 @@ function AppShell(): React.ReactElement {
 			parentRelativePath: getParentRelativePath(activeDocument?.relativePath),
 			name: suggestedName,
 		});
-		applyWorkspaceState(state, null);
+		applyWorkspaceState(state);
 		window.setTimeout(() => {
 			editorRef.current?.focus();
 		}, 0);
@@ -220,70 +226,65 @@ function AppShell(): React.ReactElement {
 			parentRelativePath: getParentRelativePath(activeDocument?.relativePath),
 			name: suggestedName,
 		});
-		applyWorkspaceState(state, openNoteSettingsPath);
+		applyWorkspaceState(state);
+	});
+
+	const handleSaveDocumentMetadata = useEventCallback(async (params: {
+		relativePath: string;
+		title: string;
+		labels: string[];
+		targetParentRelativePath: string;
+	}, successLabel = "Note updated") => {
+		await runDocumentAction(async () => {
+			if (!activeDocument) return;
+			const normalizedTitle = params.title.trim();
+			const normalizedLabels = parseLabelsInput(params.labels.join(", "));
+			const normalizedTargetParentRelativePath = params.targetParentRelativePath.trim();
+			const currentLabels = [...activeDocument.labels].sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+
+			if (
+				params.relativePath === activeDocument.relativePath
+				&& normalizedTitle === activeDocument.title
+				&& normalizedTargetParentRelativePath === activeDocument.parentRelativePath
+				&& sameLabels(currentLabels, normalizedLabels)
+			) {
+				return;
+			}
+
+			await flushAutosave(true);
+			const state = await rpcClient.updateDocumentMetadata({
+				relativePath: params.relativePath,
+				title: normalizedTitle,
+				labels: normalizedLabels,
+				targetParentRelativePath: normalizedTargetParentRelativePath,
+			});
+			applyWorkspaceState(state);
+			setSaveStatus("saved", successLabel);
+		});
 	});
 
 	const handleRenameDocument = useEventCallback(async (nextTitle: string) => {
-		await runDocumentAction(async () => {
-			if (!activeDocument) return;
-			const normalizedTitle = nextTitle.trim();
-			if (!normalizedTitle || normalizedTitle === activeDocument.title) return;
+		if (!activeDocument) return;
 
-			await flushAutosave(true);
-			const shouldKeepMenuOpen = openNoteSettingsPath === activeDocument.relativePath;
-			const state = await rpcClient.renameDocument({
-				relativePath: activeDocument.relativePath,
-				title: normalizedTitle,
-			});
-			applyWorkspaceState(state, shouldKeepMenuOpen ? state.activeDocument?.relativePath ?? null : null);
-			setSaveStatus("saved", "Renamed");
-		});
+		await handleSaveDocumentMetadata({
+			relativePath: activeDocument.relativePath,
+			title: nextTitle,
+			labels: activeDocument.labels,
+			targetParentRelativePath: activeDocument.parentRelativePath,
+		}, "Renamed");
 	});
 
-	const handleMoveDocument = useEventCallback(async (targetParentRelativePath: string) => {
+	const handleArchiveDocument = useEventCallback(async (params: { relativePath: string; archived: boolean }) => {
 		await runDocumentAction(async () => {
 			if (!activeDocument) return;
-			if (!targetParentRelativePath || targetParentRelativePath === activeDocument.parentRelativePath) return;
 
 			await flushAutosave(true);
-			const shouldKeepMenuOpen = openNoteSettingsPath === activeDocument.relativePath;
-			const state = await rpcClient.moveDocument({
-				relativePath: activeDocument.relativePath,
-				targetParentRelativePath,
-			});
-			applyWorkspaceState(state, shouldKeepMenuOpen ? state.activeDocument?.relativePath ?? null : null);
-			setSaveStatus("saved", "Moved");
-		});
-	});
-
-	const handleArchiveToggle = useEventCallback(async () => {
-		await runDocumentAction(async () => {
-			if (!activeDocument) return;
-			const nextArchived = !activeDocument.isArchived;
-			await flushAutosave(true);
-			const shouldKeepMenuOpen = openNoteSettingsPath === activeDocument.relativePath;
 			const state = await rpcClient.archiveDocument({
-				relativePath: activeDocument.relativePath,
-				archived: nextArchived,
+				relativePath: params.relativePath,
+				archived: params.archived,
 			});
-			applyWorkspaceState(state, shouldKeepMenuOpen ? state.activeDocument?.relativePath ?? null : null);
-			setSaveStatus("saved", nextArchived ? "Archived" : "Restored");
-		});
-	});
-
-	const handleLabelsSave = useEventCallback(async (labels: string[]) => {
-		await runDocumentAction(async () => {
-			if (!activeDocument) return;
-			const currentLabels = [...activeDocument.labels].sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
-			const nextLabels = [...labels].sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
-			if (sameLabels(currentLabels, nextLabels)) return;
-
-			const state = await rpcClient.setDocumentLabels({
-				relativePath: activeDocument.relativePath,
-				labels,
-			});
-			applyWorkspaceState(state, openNoteSettingsPath);
-			setSaveStatus("saved", "Labels updated");
+			applyWorkspaceState(state);
+			setSaveStatus("saved", params.archived ? "Archived" : "Restored");
 		});
 	});
 
@@ -426,12 +427,19 @@ function AppShell(): React.ReactElement {
 	});
 
 	const handleEscape = useEventCallback(() => {
+		if (voiceRecorder.permissionDialog) {
+			voiceRecorder.dismissPermissionDialog();
+			return;
+		}
 		if (settingsOpen) {
 			void closeSettings();
 			return;
 		}
 		if (chatOpen) {
 			setChatOpen(false);
+			return;
+		}
+		if (workspaceSidebarRef.current?.handleEscape()) {
 			return;
 		}
 		if (zenMode) {
@@ -459,6 +467,10 @@ function AppShell(): React.ReactElement {
 	useEffect(() => {
 		setEditorText(activeDocument?.content ?? "");
 	}, [activeDocument?.content, activeDocument?.relativePath]);
+
+	useEffect(() => {
+		workspaceStateRef.current = workspaceState;
+	}, [workspaceState]);
 
 	useEffect(() => {
 		if (!audioRef.current) return;
@@ -523,22 +535,6 @@ function AppShell(): React.ReactElement {
 	]);
 
 	useEffect(() => {
-		const handleClick = (event: MouseEvent) => {
-			const target = event.target;
-			if (!(target instanceof HTMLElement) || !openNoteSettingsPath) return;
-			if (target.closest(".workspace-tree__file-settings") || target.closest(".workspace-tree__file-menu")) {
-				return;
-			}
-			setOpenNoteSettingsPath(null);
-		};
-
-		document.addEventListener("click", handleClick);
-		return () => {
-			document.removeEventListener("click", handleClick);
-		};
-	}, [openNoteSettingsPath, setOpenNoteSettingsPath]);
-
-	useEffect(() => {
 		const handleBlur = () => {
 			void flushAutosave(true);
 		};
@@ -579,16 +575,13 @@ function AppShell(): React.ReactElement {
 
 			<div className="workspace-shell">
 				<WorkspaceSidebar
+					ref={workspaceSidebarRef}
 					activeDocument={activeDocument}
-					onArchiveToggle={() => void handleArchiveToggle()}
+					onArchiveDocument={handleArchiveDocument}
 					onCreateDocument={() => void handleCreateDocument()}
 					onCreateFolder={() => void handleCreateFolder()}
-					onLabelsSave={(labels) => void handleLabelsSave(labels)}
-					onMoveDocument={(targetParentRelativePath) => void handleMoveDocument(targetParentRelativePath)}
-					onOpenDocument={(relativePath) => void openDocument(relativePath)}
-					onRenameDocument={(nextTitle) => void handleRenameDocument(nextTitle)}
-					openNoteSettingsPath={openNoteSettingsPath}
-					setOpenNoteSettingsPath={setOpenNoteSettingsPath}
+					onOpenDocument={openDocument}
+					onSaveDocumentMetadata={handleSaveDocumentMetadata}
 					tree={workspaceState?.tree ?? []}
 					workspacePath={currentWorkspacePath}
 				/>
@@ -597,6 +590,7 @@ function AppShell(): React.ReactElement {
 					<DocumentHeader
 						activeDocument={activeDocument}
 						currentWorkspacePath={currentWorkspacePath}
+						onRenameDocument={(nextTitle) => void handleRenameDocument(nextTitle)}
 						saveStatusLabel={saveStatus.label}
 						saveStatusState={saveStatus.state}
 					/>
@@ -619,6 +613,13 @@ function AppShell(): React.ReactElement {
 				onMouseLeave={voiceRecorder.handleMouseLeave}
 				onMouseUp={voiceRecorder.handleMouseUp}
 				statusText={voiceRecorder.statusText}
+			/>
+
+			<MicrophonePermissionModal
+				dialog={voiceRecorder.permissionDialog}
+				onClose={voiceRecorder.dismissPermissionDialog}
+				onOpenSystemSettings={() => void voiceRecorder.openMicrophoneSystemSettings()}
+				onRetry={() => void voiceRecorder.retryMicrophoneAccess()}
 			/>
 
 			<StatusBar aiStatus={aiStatus} wordCount={wordCount} />

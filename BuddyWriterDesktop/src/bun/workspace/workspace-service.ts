@@ -132,11 +132,6 @@ export function createWorkspaceService(options: { settingsRepository: SettingsRe
 			join(normalizedWorkspacePath, "Archive"),
 			getWorkspaceMetaDir(normalizedWorkspacePath),
 		].forEach(ensureDir);
-
-		const defaultNotePath = join(normalizedWorkspacePath, "Inbox", "Untitled.md");
-		if (!existsSync(defaultNotePath)) {
-			writeTextFileAtomic(defaultNotePath, "");
-		}
 	}
 
 	function readWorkspaceMetadata(workspacePath: string): WorkspaceMetadata {
@@ -321,12 +316,6 @@ export function createWorkspaceService(options: { settingsRepository: SettingsRe
 			activeDocumentPath = findFirstDocument(tree);
 		}
 
-		if (!activeDocumentPath) {
-			const fallbackPath = "Inbox/Untitled.md";
-			writeTextFileAtomic(resolveWorkspaceRelativePath(normalizedWorkspacePath, fallbackPath), "");
-			activeDocumentPath = fallbackPath;
-		}
-
 		if (metadata.lastOpenDocument !== activeDocumentPath) {
 			writeWorkspaceMetadata(normalizedWorkspacePath, { ...metadata, lastOpenDocument: activeDocumentPath });
 		}
@@ -427,6 +416,47 @@ export function createWorkspaceService(options: { settingsRepository: SettingsRe
 		return getWorkspaceState(workspacePath);
 	}
 
+	function updateWorkspaceDocumentMetadata(
+		relativePath: string,
+		title: string,
+		labels: string[],
+		targetParentRelativePath: string,
+	): WorkspaceState {
+		const workspacePath = settingsRepository.normalizeWorkspaceRootPath(settingsRepository.getSettings().workspacePath);
+		ensureWorkspaceStructure(workspacePath);
+		const normalizedRelativePath = normalize(relativePath).replaceAll("\\", "/");
+		const normalizedTitle = title.trim();
+		if (!normalizedTitle) {
+			throw new Error("Document title cannot be empty.");
+		}
+
+		const normalizedTargetParentRelativePath = targetParentRelativePath.trim()
+			? normalize(targetParentRelativePath).replaceAll("\\", "/")
+			: "";
+		const normalizedLabels = normalizeWorkspaceDocumentLabels(labels);
+		const currentTitle = basename(normalizedRelativePath, extname(normalizedRelativePath));
+		const currentParentRelativePath = getDocumentParentRelativePath(normalizedRelativePath);
+		const shouldMoveOrRename =
+			normalizedTitle !== currentTitle
+			|| normalizedTargetParentRelativePath !== currentParentRelativePath;
+
+		const nextRelativePath = shouldMoveOrRename
+			? moveWorkspaceDocumentToTarget(
+				workspacePath,
+				normalizedRelativePath,
+				normalizedTargetParentRelativePath,
+				normalizedTitle,
+			)
+			: normalizedRelativePath;
+
+		setWorkspaceDocumentMetadata(workspacePath, nextRelativePath, { labels: normalizedLabels });
+		writeWorkspaceMetadata(workspacePath, {
+			...readWorkspaceMetadata(workspacePath),
+			lastOpenDocument: nextRelativePath,
+		});
+		return getWorkspaceState(workspacePath);
+	}
+
 	function moveWorkspaceDocument(relativePath: string, targetParentRelativePath: string): WorkspaceState {
 		const workspacePath = settingsRepository.normalizeWorkspaceRootPath(settingsRepository.getSettings().workspacePath);
 		ensureWorkspaceStructure(workspacePath);
@@ -467,6 +497,7 @@ export function createWorkspaceService(options: { settingsRepository: SettingsRe
 		saveWorkspaceDocument,
 		setWorkspaceDocumentLabels,
 		setWorkspacePath,
+		updateWorkspaceDocumentMetadata,
 		writeWorkspaceMetadata,
 	};
 }
