@@ -1,4 +1,6 @@
 import Electrobun, { Electroview } from "electrobun/view";
+import lottie from "lottie-web";
+import microphoneAnimation from "../../public/microphone.json";
 
 type Hotkey = {
 	mod: boolean;
@@ -17,14 +19,78 @@ type HotkeyMap = {
 	code: Hotkey;
 };
 
+type LocalAIProfileId = "starter" | "quality";
+type LocalAIInstallState = "not_installed" | "installing" | "ready" | "error";
+type LocalAIModelKind = "text" | "stt" | "tts";
+type LocalAIModelProvider = "mlx-lm" | "mlx-audio" | "mlx-whisper";
+
+type LocalAIModelEntry = {
+	id: string;
+	kind: LocalAIModelKind;
+	label: string;
+	provider: LocalAIModelProvider;
+	quantization: string;
+	approxDownloadGB: number;
+	recommendedFor: "starter" | "quality" | "power" | "legacy";
+	hidden?: boolean;
+	deprecated?: boolean;
+	defaultVoice?: string;
+	defaultLanguage?: string;
+	defaultLangCode?: string;
+};
+
+type LocalAIProfile = {
+	id: LocalAIProfileId;
+	label: string;
+	textModelId: string;
+	sttModelId: string;
+	ttsModelId: string;
+	approxBundleGB: number;
+};
+
+type LocalAICatalog = {
+	version: string;
+	generatedAt: string;
+	models: LocalAIModelEntry[];
+	profiles: LocalAIProfile[];
+	defaultProfileId: LocalAIProfileId;
+};
+
+type LocalAISettings = {
+	enabled: boolean;
+	installState: LocalAIInstallState;
+	selectedProfileId: LocalAIProfileId;
+	textModelId: string;
+	sttModelId: string;
+	ttsModelId: string;
+	catalogVersion: string | null;
+	installBundleVersion: string | null;
+	installRoot: string;
+	lastError: string | null;
+};
+
 type Settings = {
-	provider: "openrouter" | "mlx";
+	provider: "openrouter" | "local";
 	openrouterKey: string;
 	openrouterModel: string;
-	mlxModel: string;
-	mlxPythonPath: string;
-	whisperModel: string;
+	localAI: LocalAISettings;
 	hotkeys: HotkeyMap;
+};
+
+type LocalAIStatus = {
+	enabled: boolean;
+	installState: LocalAIInstallState;
+	currentPhase?: string;
+	progressPct?: number;
+	lastError?: string | null;
+	storageUsedGB?: number;
+	selectedProfileId: LocalAIProfileId;
+	installRoot: string;
+	catalogVersion: string | null;
+	installBundleVersion: string | null;
+	textModelId: string;
+	sttModelId: string;
+	ttsModelId: string;
 };
 
 const defaultHotkeys: HotkeyMap = {
@@ -64,41 +130,49 @@ type WriterRPC = {
 				params: { text: string };
 				response: { html: string };
 			};
-				getSettings: {
-					params: {};
-					response: Settings;
-				};
-				saveSettings: {
-					params: Settings;
-					response: { success: boolean; error?: string };
-				};
-			startMLXServer: {
-				params: { model: string; pythonPath: string };
+			getSettings: {
+				params: {};
+				response: Settings;
+			};
+			saveSettings: {
+				params: Settings;
 				response: { success: boolean; error?: string };
 			};
-			stopMLXServer: {
+			getLocalAICatalog: {
+				params: {};
+				response: { catalog: LocalAICatalog };
+			};
+			getLocalAIStatus: {
+				params: {};
+				response: LocalAIStatus;
+			};
+			installLocalAI: {
+				params: { profileId?: LocalAIProfileId };
+				response: { accepted: boolean; error?: string };
+			};
+			cancelLocalAIInstall: {
 				params: {};
 				response: { success: boolean };
 			};
-			getMLXStatus: {
+			repairLocalAI: {
 				params: {};
-				response: { running: boolean };
+				response: { accepted: boolean; error?: string };
 			};
-			startWhisperServer: {
-				params: { model: string; pythonPath: string };
-				response: { success: boolean; error?: string };
-			};
-			stopWhisperServer: {
+			removeLocalAI: {
 				params: {};
 				response: { success: boolean };
 			};
-			getWhisperStatus: {
-				params: {};
-				response: { running: boolean };
+			setLocalAIProfile: {
+				params: { profileId: LocalAIProfileId };
+				response: { success: boolean };
 			};
 			transcribeAudio: {
 				params: { audioPath: string; language?: string };
 				response: { text: string };
+			};
+			speakText: {
+				params: { text: string };
+				response: { accepted: boolean; audioPath?: string };
 			};
 		};
 		messages: {};
@@ -115,7 +189,7 @@ type WriterRPC = {
 };
 
 const rpc = Electroview.defineRPC<WriterRPC>({
-	maxRequestTime: 120000,
+	maxRequestTime: 180000,
 	handlers: {
 		requests: {},
 		messages: {
@@ -129,7 +203,6 @@ const rpc = Electroview.defineRPC<WriterRPC>({
 
 const electrobun = new Electrobun.Electroview({ rpc });
 
-// ─── DOM Elements ───
 const app = document.getElementById("app")!;
 const editor = document.getElementById("editor") as HTMLDivElement;
 const wordCount = document.getElementById("word-count")!;
@@ -142,41 +215,88 @@ const chatSend = document.getElementById("chat-send")!;
 const chatContext = document.getElementById("chat-context")!;
 const clearContext = document.getElementById("clear-context")!;
 const grammarOverlay = document.getElementById("grammar-overlay")!;
-
-// Settings DOM
 const settingsBtn = document.getElementById("settings-btn")!;
 const settingsPanel = document.getElementById("settings-panel")!;
 const settingsClose = document.getElementById("settings-close")!;
 const openrouterSettings = document.getElementById("openrouter-settings")!;
-const mlxSettings = document.getElementById("mlx-settings")!;
+const localSettings = document.getElementById("local-settings")!;
 const openrouterKey = document.getElementById("openrouter-key") as HTMLInputElement;
 const openrouterModel = document.getElementById("openrouter-model") as HTMLSelectElement;
-const mlxModel = document.getElementById("mlx-model") as HTMLSelectElement;
-const mlxPython = document.getElementById("mlx-python") as HTMLInputElement;
-const mlxStatusDot = document.getElementById("mlx-status-dot")!;
-const mlxStatusText = document.getElementById("mlx-status-text")!;
-const mlxStart = document.getElementById("mlx-start") as HTMLButtonElement;
-const mlxStop = document.getElementById("mlx-stop") as HTMLButtonElement;
 const providerToggles = document.querySelectorAll<HTMLButtonElement>(".settings-toggle");
+const localAIHeadline = document.getElementById("local-ai-headline")!;
+const localAISummary = document.getElementById("local-ai-summary")!;
+const localAIStatePill = document.getElementById("local-ai-state-pill")!;
+const localAIProgressShell = document.getElementById("local-ai-progress-shell")!;
+const localAIProgressFill = document.getElementById("local-ai-progress-fill")!;
+const localAIPhase = document.getElementById("local-ai-phase")!;
+const localAIProgressText = document.getElementById("local-ai-progress-text")!;
+const localAIError = document.getElementById("local-ai-error")!;
+const localAIErrorSummary = document.getElementById("local-ai-error-summary")!;
+const localAIErrorBody = document.getElementById("local-ai-error-body")!;
+const localAIEnable = document.getElementById("local-ai-enable") as HTMLButtonElement;
+const localAIManage = document.getElementById("local-ai-manage") as HTMLButtonElement;
+const localAIRetry = document.getElementById("local-ai-retry") as HTMLButtonElement;
+const localAICancel = document.getElementById("local-ai-cancel") as HTMLButtonElement;
+const localAIManagePanel = document.getElementById("local-ai-manage-panel")!;
+const localAIProfileStarter = document.getElementById("local-ai-profile-starter") as HTMLButtonElement;
+const localAIProfileQuality = document.getElementById("local-ai-profile-quality") as HTMLButtonElement;
+const localAIInstallRoot = document.getElementById("local-ai-install-root")!;
+const localAIStorage = document.getElementById("local-ai-storage")!;
+const localAITextLabel = document.getElementById("local-ai-text-label")!;
+const localAISttLabel = document.getElementById("local-ai-stt-label")!;
+const localAITtsLabel = document.getElementById("local-ai-tts-label")!;
+const localAIBundle = document.getElementById("local-ai-bundle")!;
+const localAIAdvancedToggle = document.getElementById("local-ai-advanced-toggle") as HTMLButtonElement;
+const localAIAdvanced = document.getElementById("local-ai-advanced")!;
+const localAITextModel = document.getElementById("local-ai-text-model") as HTMLSelectElement;
+const localAISttModel = document.getElementById("local-ai-stt-model") as HTMLSelectElement;
+const localAITtsModel = document.getElementById("local-ai-tts-model") as HTMLSelectElement;
+const localAIRepair = document.getElementById("local-ai-repair") as HTMLButtonElement;
+const localAIRemove = document.getElementById("local-ai-remove") as HTMLButtonElement;
+const micBtn = document.getElementById("mic-btn") as HTMLButtonElement;
+const micStatus = document.getElementById("mic-status")!;
+const micLottie = document.getElementById("mic-lottie") as HTMLDivElement;
+const ttsAudio = document.getElementById("tts-audio") as HTMLAudioElement;
 
-// Whisper DOM
-const whisperModel = document.getElementById("whisper-model") as HTMLSelectElement;
-const whisperStatusDot = document.getElementById("whisper-status-dot")!;
-const whisperStatusText = document.getElementById("whisper-status-text")!;
-const whisperStart = document.getElementById("whisper-start") as HTMLButtonElement;
-const whisperStop = document.getElementById("whisper-stop") as HTMLButtonElement;
-
-// ─── State ───
 let selectedText = "";
 let selectedRange: Range | null = null;
 let isZen = false;
 let isMarkdownMode = false;
 let editorRawText = "";
 let currentSettings: Settings | null = null;
+let currentCatalog: LocalAICatalog | null = null;
+let localAIStatus: LocalAIStatus | null = null;
+let localAIManageOpen = false;
+let localAIAdvancedOpen = false;
+let localAIStatusPoll: ReturnType<typeof setInterval> | null = null;
+let voiceClipboard = "";
+let lastCursorRange: Range | null = null;
+let isRecording = false;
+let holdMode = false;
+let holdTimer: ReturnType<typeof setTimeout> | null = null;
+let recordingContext: AudioContext | null = null;
+let recordingStream: MediaStream | null = null;
+let recordingSource: MediaStreamAudioSourceNode | null = null;
+let recordingProcessor: ScriptProcessorNode | null = null;
+let recordingSilence: GainNode | null = null;
+let recordedChunks: Float32Array[] = [];
+let recordedSampleRate = 44100;
+
+const micAnimation = lottie.loadAnimation({
+	container: micLottie,
+	renderer: "svg",
+	loop: true,
+	autoplay: false,
+	animationData: microphoneAnimation,
+	rendererSettings: {
+		preserveAspectRatio: "xMidYMid meet",
+	},
+});
+
+micAnimation.goToAndStop(0, true);
 
 function ensureSelectValue(select: HTMLSelectElement, value: string, labelPrefix: string) {
 	if (!value) return;
-
 	const hasOption = Array.from(select.options).some((option) => option.value === value);
 	if (!hasOption) {
 		const option = document.createElement("option");
@@ -184,21 +304,36 @@ function ensureSelectValue(select: HTMLSelectElement, value: string, labelPrefix
 		option.textContent = `${labelPrefix}: ${value}`;
 		select.prepend(option);
 	}
-
 	select.value = value;
 }
 
-// ─── Word Count ───
+function getModelEntry(modelId: string) {
+	return currentCatalog?.models.find((model) => model.id === modelId) ?? null;
+}
+
+function getProfile(profileId: LocalAIProfileId) {
+	return currentCatalog?.profiles.find((profile) => profile.id === profileId) ?? null;
+}
+
+function getModelLabel(modelId: string) {
+	return getModelEntry(modelId)?.label ?? modelId;
+}
+
 function updateWordCount() {
 	const text = editor.innerText.trim();
 	const count = text ? text.split(/\s+/).length : 0;
 	wordCount.textContent = `${count} word${count !== 1 ? "s" : ""}`;
 }
 
-editor.addEventListener("input", updateWordCount);
-updateWordCount();
+function showAIStatus(text: string) {
+	aiStatus.textContent = text;
+	aiStatus.classList.add("visible");
+}
 
-// ─── Zen Mode ───
+function hideAIStatus() {
+	aiStatus.classList.remove("visible");
+}
+
 function toggleZen() {
 	isZen = !isZen;
 	app.classList.toggle("zen", isZen);
@@ -208,7 +343,6 @@ function toggleZen() {
 	}
 }
 
-// ─── Grammar Fix ───
 async function handleGrammarFix() {
 	const text = editor.innerText.trim();
 	if (!text) return;
@@ -222,15 +356,14 @@ async function handleGrammarFix() {
 			editor.innerText = result;
 			updateWordCount();
 		}
-	} catch (err) {
-		console.error("Grammar fix failed:", err);
+	} catch (error) {
+		console.error("Grammar fix failed:", error);
 	} finally {
 		grammarOverlay.style.display = "none";
 		hideAIStatus();
 	}
 }
 
-// ─── Chat Panel ───
 function toggleChat() {
 	const isOpen = chatPanel.classList.toggle("open");
 	if (isOpen) {
@@ -245,31 +378,113 @@ chatClose.addEventListener("click", () => {
 
 clearContext.addEventListener("click", () => {
 	selectedText = "";
+	selectedRange = null;
 	chatContext.style.display = "none";
 });
 
 function captureSelection() {
-	const sel = window.getSelection();
-	if (sel && sel.rangeCount > 0 && sel.toString().trim() && editor.contains(sel.anchorNode)) {
-		selectedText = sel.toString().trim();
-		selectedRange = sel.getRangeAt(0).cloneRange();
+	const selection = window.getSelection();
+	if (selection && selection.rangeCount > 0 && selection.toString().trim() && editor.contains(selection.anchorNode)) {
+		selectedText = selection.toString().trim();
+		selectedRange = selection.getRangeAt(0).cloneRange();
 		chatContext.style.display = "flex";
-	} else {
-		selectedText = "";
-		selectedRange = null;
-		chatContext.style.display = "none";
+		return;
+	}
+
+	selectedText = "";
+	selectedRange = null;
+	chatContext.style.display = "none";
+}
+
+async function renderBubbleContent(bubble: HTMLElement) {
+	const raw = bubble.dataset.rawText ?? "";
+	const actions = bubble.querySelector(".chat-msg-actions");
+
+	while (bubble.firstChild && bubble.firstChild !== actions) {
+		bubble.removeChild(bubble.firstChild);
+	}
+
+	if (isMarkdownMode) {
+		bubble.classList.remove("plain-text");
+		const { html } = await electrobun.rpc!.request.renderMarkdown({ text: raw });
+		const content = document.createElement("div");
+		content.className = "markdown-content";
+		content.innerHTML = html;
+		bubble.insertBefore(content, actions || null);
+		return;
+	}
+
+	bubble.classList.add("plain-text");
+	bubble.insertBefore(document.createTextNode(raw), actions || null);
+}
+
+async function speakAssistantText(text: string) {
+	showAIStatus("speaking...");
+	try {
+		const result = await electrobun.rpc!.request.speakText({ text });
+		if (result.accepted && result.audioPath) {
+			ttsAudio.src = `file://${result.audioPath}`;
+			await ttsAudio.play();
+		}
+	} catch (error) {
+		console.error("Speech playback failed:", error);
+	} finally {
+		hideAIStatus();
 	}
 }
 
-// ─── Chat Send ───
+function buildAssistantActions(text: string, showApply: boolean) {
+	const actions = document.createElement("div");
+	actions.className = "chat-msg-actions";
+
+	if (showApply) {
+		const applyButton = document.createElement("button");
+		applyButton.className = "apply-btn";
+		applyButton.textContent = "↳ Apply to selection";
+		applyButton.addEventListener("click", () => {
+			replaceSelection(text);
+			chatPanel.classList.remove("open");
+		});
+		actions.appendChild(applyButton);
+	}
+
+	if (localAIStatus?.installState === "ready") {
+		const speakButton = document.createElement("button");
+		speakButton.className = "apply-btn";
+		speakButton.textContent = "Read aloud";
+		speakButton.addEventListener("click", () => {
+			void speakAssistantText(text);
+		});
+		actions.appendChild(speakButton);
+	}
+
+	return actions.childElementCount > 0 ? actions : null;
+}
+
+async function addChatBubble(role: "user" | "assistant", text: string, showApply = false) {
+	const bubble = document.createElement("div");
+	bubble.className = `chat-msg ${role}`;
+
+	if (role === "assistant") {
+		bubble.dataset.rawText = text;
+		const actions = buildAssistantActions(text, showApply);
+		if (actions) bubble.appendChild(actions);
+		await renderBubbleContent(bubble);
+	} else {
+		bubble.textContent = text;
+	}
+
+	chatMessages.appendChild(bubble);
+	chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
 async function sendChatMessage() {
 	const userMsg = chatInput.value.trim();
 	if (!userMsg) return;
 
 	const contextText = selectedText;
 	chatInput.value = "";
-
-	addChatBubble("user", userMsg);
+	await addChatBubble("user", userMsg);
 
 	let instruction = userMsg;
 	let text = editor.innerText;
@@ -282,81 +497,31 @@ async function sendChatMessage() {
 	}
 
 	showAIStatus("thinking...");
-
 	try {
-		const { result } = await electrobun.rpc!.request.aiComplete({
-			text,
-			instruction,
-		});
-		addChatBubble("assistant", result, !!contextText);
-	} catch (err) {
-		addChatBubble("assistant", "Something went wrong. Please try again.");
+		const { result } = await electrobun.rpc!.request.aiComplete({ text, instruction });
+		await addChatBubble("assistant", result, Boolean(contextText));
+	} catch (error) {
+		console.error("Chat failed:", error);
+		await addChatBubble("assistant", "Something went wrong. Please try again.");
 	} finally {
 		hideAIStatus();
 	}
 }
 
-chatSend.addEventListener("click", sendChatMessage);
-chatInput.addEventListener("keydown", (e) => {
-	if (e.key === "Enter" && !e.shiftKey) {
-		e.preventDefault();
-		sendChatMessage();
-	}
+chatSend.addEventListener("click", () => {
+	void sendChatMessage();
 });
 
-async function addChatBubble(role: "user" | "assistant", text: string, showApply = false) {
-	const bubble = document.createElement("div");
-	bubble.className = `chat-msg ${role}`;
-
-	if (role === "assistant") {
-		bubble.dataset.rawText = text;
-		await renderBubbleContent(bubble);
-	} else {
-		bubble.textContent = text;
+chatInput.addEventListener("keydown", (event) => {
+	if (event.key === "Enter" && !event.shiftKey) {
+		event.preventDefault();
+		void sendChatMessage();
 	}
-
-	if (role === "assistant" && showApply) {
-		const btn = document.createElement("button");
-		btn.className = "apply-btn";
-		btn.textContent = "↳ Apply to selection";
-		btn.addEventListener("click", () => {
-			replaceSelection(text);
-			chatPanel.classList.remove("open");
-		});
-		bubble.appendChild(btn);
-	}
-
-	chatMessages.appendChild(bubble);
-	chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-async function renderBubbleContent(bubble: HTMLElement) {
-	const raw = bubble.dataset.rawText ?? "";
-	const applyBtn = bubble.querySelector(".apply-btn");
-
-	// Clear existing content except apply button
-	while (bubble.firstChild && bubble.firstChild !== applyBtn) {
-		bubble.removeChild(bubble.firstChild);
-	}
-
-	if (isMarkdownMode) {
-		bubble.classList.remove("plain-text");
-		const { html } = await electrobun.rpc!.request.renderMarkdown({ text: raw });
-		const content = document.createElement("div");
-		content.className = "markdown-content";
-		content.innerHTML = html;
-		bubble.insertBefore(content, applyBtn || null);
-	} else {
-		bubble.classList.add("plain-text");
-		const textNode = document.createTextNode(raw);
-		bubble.insertBefore(textNode, applyBtn || null);
-	}
-}
+});
 
 async function toggleMarkdownMode() {
 	isMarkdownMode = !isMarkdownMode;
 
-	// Toggle editor preview
 	if (isMarkdownMode) {
 		editorRawText = editor.innerText;
 		const { html } = await electrobun.rpc!.request.renderMarkdown({ text: editorRawText });
@@ -370,7 +535,6 @@ async function toggleMarkdownMode() {
 		editor.focus();
 	}
 
-	// Toggle chat bubbles
 	const bubbles = chatMessages.querySelectorAll<HTMLElement>(".chat-msg.assistant");
 	for (const bubble of bubbles) {
 		await renderBubbleContent(bubble);
@@ -395,104 +559,192 @@ function replaceSelection(newText: string) {
 	updateWordCount();
 }
 
-// ─── AI Status ───
-function showAIStatus(text: string) {
-	aiStatus.textContent = text;
-	aiStatus.classList.add("visible");
+function setProviderUI(provider: Settings["provider"]) {
+	providerToggles.forEach((button) => {
+		button.classList.toggle("active", button.dataset.provider === provider);
+	});
+	openrouterSettings.style.display = provider === "openrouter" ? "flex" : "none";
+	localSettings.style.display = provider === "local" ? "flex" : "none";
 }
 
-function hideAIStatus() {
-	aiStatus.classList.remove("visible");
+function renderModelOptions(select: HTMLSelectElement, kind: LocalAIModelKind, selectedId: string) {
+	if (!currentCatalog) return;
+	select.innerHTML = "";
+	const models = currentCatalog.models.filter((model) => model.kind === kind && (!model.hidden || model.id === selectedId));
+	for (const model of models) {
+		const option = document.createElement("option");
+		option.value = model.id;
+		option.textContent = `${model.label} • ${model.quantization} • ${model.approxDownloadGB.toFixed(1)} GB`;
+		select.appendChild(option);
+	}
+	ensureSelectValue(select, selectedId, "Custom model");
 }
 
-// ─── Settings Panel ───
-settingsBtn.addEventListener("click", async (e) => {
-	e.stopPropagation();
+function setActiveProfileButton(profileId: LocalAIProfileId) {
+	localAIProfileStarter.classList.toggle("active", profileId === "starter");
+	localAIProfileQuality.classList.toggle("active", profileId === "quality");
+}
+
+function renderLocalAIUI() {
+	if (!currentSettings || !localAIStatus) return;
+
+	const profile = getProfile(currentSettings.localAI.selectedProfileId);
+	const state = localAIStatus.installState;
+	const progress = localAIStatus.progressPct ?? 0;
+
+	localAIHeadline.textContent = state === "ready" ? "Local AI Ready" : "Enable Local AI";
+	localAIStatePill.textContent =
+		state === "ready" ? "Ready" :
+		state === "installing" ? "Installing" :
+		state === "error" ? "Needs attention" :
+		"Not installed";
+	localAIStatePill.className = `local-ai-pill ${state}`;
+	localAISummary.textContent =
+		state === "ready"
+			? `${profile?.label ?? "Starter"} bundle installed. Local writing help, dictation, and speech are available offline.`
+			: state === "installing"
+				? "BuddyWriter is downloading and preparing the local runtime for you."
+				: "One button installs the managed runtime, text model, voice input model, and voice output model.";
+
+	localAIProgressShell.style.display = state === "installing" ? "flex" : "none";
+	localAIProgressFill.style.width = `${progress}%`;
+	localAIPhase.textContent = localAIStatus.currentPhase ?? "Preparing local AI workspace";
+	localAIProgressText.textContent = `${progress}%`;
+
+	const hasError = state === "error" && Boolean(localAIStatus.lastError);
+	localAIError.style.display = hasError ? "block" : "none";
+	localAIErrorSummary.textContent = localAIStatus.lastError ?? "";
+	localAIErrorBody.textContent = localAIStatus.lastError ?? "";
+
+	localAIEnable.style.display = state === "ready" ? "none" : "inline-flex";
+	localAIEnable.textContent = state === "installing" ? "Installing..." : "Enable Local AI";
+	localAIEnable.disabled = state === "installing";
+	localAIManage.style.display = (state === "ready" || hasError) ? "inline-flex" : "none";
+	localAIRetry.style.display = hasError ? "inline-flex" : "none";
+	localAICancel.style.display = state === "installing" ? "inline-flex" : "none";
+
+	localAIManagePanel.style.display = localAIManageOpen && state !== "installing" && state !== "not_installed" ? "flex" : "none";
+	localAIInstallRoot.textContent = localAIStatus.installRoot;
+	localAIStorage.textContent = `${(localAIStatus.storageUsedGB ?? 0).toFixed(1)} GB`;
+	localAITextLabel.textContent = getModelLabel(currentSettings.localAI.textModelId);
+	localAISttLabel.textContent = getModelLabel(currentSettings.localAI.sttModelId);
+	localAITtsLabel.textContent = getModelLabel(currentSettings.localAI.ttsModelId);
+	localAIBundle.textContent = localAIStatus.installBundleVersion ?? "Not installed";
+	setActiveProfileButton(currentSettings.localAI.selectedProfileId);
+
+	renderModelOptions(localAITextModel, "text", currentSettings.localAI.textModelId);
+	renderModelOptions(localAISttModel, "stt", currentSettings.localAI.sttModelId);
+	renderModelOptions(localAITtsModel, "tts", currentSettings.localAI.ttsModelId);
+	localAIAdvanced.style.display = localAIAdvancedOpen ? "flex" : "none";
+	localAIAdvancedToggle.textContent = localAIAdvancedOpen ? "Hide Advanced" : "Advanced";
+}
+
+function startLocalAIStatusPolling() {
+	if (localAIStatusPoll) return;
+	localAIStatusPoll = setInterval(() => {
+		void refreshLocalAIStatus();
+	}, 1200);
+}
+
+function stopLocalAIStatusPolling() {
+	if (!localAIStatusPoll) return;
+	clearInterval(localAIStatusPoll);
+	localAIStatusPoll = null;
+}
+
+async function refreshLocalAIStatus() {
+	localAIStatus = await electrobun.rpc!.request.getLocalAIStatus({});
+	renderLocalAIUI();
+
+	if (localAIStatus.installState === "installing" || settingsPanel.classList.contains("open")) {
+		startLocalAIStatusPolling();
+	} else {
+		stopLocalAIStatusPolling();
+	}
+}
+
+async function loadSettingsUI() {
+	const [{ catalog }, settingsResponse] = await Promise.all([
+		electrobun.rpc!.request.getLocalAICatalog({}),
+		electrobun.rpc!.request.getSettings({}),
+	]);
+	currentCatalog = catalog;
+	currentSettings = settingsResponse;
+
+	openrouterKey.value = currentSettings.openrouterKey;
+	openrouterModel.value = currentSettings.openrouterModel;
+	setProviderUI(currentSettings.provider);
+	loadHotkeysUI();
+	await refreshLocalAIStatus();
+	renderLocalAIUI();
+}
+
+async function openSettingsForLocalAI(message?: string) {
+	if (!settingsPanel.classList.contains("open")) {
+		settingsPanel.classList.add("open");
+	}
+
+	await loadSettingsUI();
+	startLocalAIStatusPolling();
+	setProviderUI("local");
+	localSettings.scrollIntoView({ block: "start", behavior: "smooth" });
+
+	if (message) {
+		showAIStatus(message);
+		setTimeout(() => {
+			if (aiStatus.textContent === message) hideAIStatus();
+		}, 3500);
+	}
+}
+
+async function ensureVoiceInputReady() {
+	if (!currentSettings || !localAIStatus) {
+		await loadSettingsUI();
+	} else {
+		await refreshLocalAIStatus();
+	}
+
+	if (localAIStatus?.installState === "ready") {
+		return true;
+	}
+
+	await openSettingsForLocalAI("Set up Local AI voice input before using dictation.");
+	return false;
+}
+
+settingsBtn.addEventListener("click", async (event) => {
+	event.stopPropagation();
 	settingsPanel.classList.toggle("open");
 	if (settingsPanel.classList.contains("open")) {
 		await loadSettingsUI();
+		startLocalAIStatusPolling();
+	} else {
+		stopLocalAIStatusPolling();
 	}
 });
 
 settingsClose.addEventListener("click", () => {
 	settingsPanel.classList.remove("open");
-	persistSettings();
+	stopLocalAIStatusPolling();
+	void persistSettings();
 });
 
-async function loadSettingsUI() {
-	const s = await electrobun.rpc!.request.getSettings({});
-	currentSettings = s;
-
-	openrouterKey.value = s.openrouterKey;
-	openrouterModel.value = s.openrouterModel;
-	ensureSelectValue(mlxModel, s.mlxModel, "Custom model");
-	mlxPython.value = s.mlxPythonPath || "python3";
-	ensureSelectValue(whisperModel, s.whisperModel || "mlx-community/whisper-large-v3-turbo", "Custom voice model");
-
-	setProviderUI(s.provider);
-	loadHotkeysUI();
-	await refreshMLXStatus();
-	await refreshWhisperStatus();
-}
-
-function setProviderUI(provider: "openrouter" | "mlx") {
-	providerToggles.forEach((btn) => {
-		btn.classList.toggle("active", btn.dataset.provider === provider);
-	});
-	openrouterSettings.style.display = provider === "openrouter" ? "flex" : "none";
-	mlxSettings.style.display = provider === "mlx" ? "flex" : "none";
-}
-
-providerToggles.forEach((btn) => {
-	btn.addEventListener("click", () => {
-		const provider = btn.dataset.provider as "openrouter" | "mlx";
+providerToggles.forEach((button) => {
+	button.addEventListener("click", () => {
+		if (!currentSettings) return;
+		const provider = button.dataset.provider as Settings["provider"];
+		currentSettings.provider = provider;
 		setProviderUI(provider);
-		if (currentSettings) {
-			currentSettings.provider = provider;
-			persistSettings();
-		}
+		void persistSettings();
 	});
 });
 
-// Auto-save on input changes
-openrouterKey.addEventListener("change", persistSettings);
-openrouterModel.addEventListener("change", persistSettings);
-mlxModel.addEventListener("change", persistSettings);
-mlxPython.addEventListener("change", persistSettings);
-whisperModel.addEventListener("change", persistSettings);
+openrouterKey.addEventListener("change", () => void persistSettings());
+openrouterModel.addEventListener("change", () => void persistSettings());
 
-async function persistSettings() {
-	if (!currentSettings) return;
-	currentSettings.openrouterKey = openrouterKey.value;
-	currentSettings.openrouterModel = openrouterModel.value;
-	currentSettings.mlxModel = mlxModel.value;
-	currentSettings.mlxPythonPath = mlxPython.value.trim() || "python3";
-	mlxPython.value = currentSettings.mlxPythonPath;
-	currentSettings.whisperModel = whisperModel.value;
-
-	const result = await electrobun.rpc!.request.saveSettings(currentSettings);
-	if (!result.success && result.error) {
-		console.error(result.error);
-		showAIStatus(result.error);
-		setTimeout(() => {
-			hideAIStatus();
-		}, 4000);
-	}
-}
-
-// ─── Hotkeys UI ───
-function formatHotkey(h: Hotkey): string {
-	let label = "";
-	if (h.mod) label += "⌘";
-	if (h.shift) label += "⇧";
-	label += h.key.toUpperCase();
-	return label;
-}
-
-function loadHotkeysUI() {
+function populateHotkeysList() {
 	const list = document.getElementById("hotkeys-list")!;
 	list.innerHTML = "";
-
 	const hotkeys = currentSettings?.hotkeys ?? defaultHotkeys;
 
 	for (const actionId of Object.keys(hotkeyLabels) as (keyof HotkeyMap)[]) {
@@ -503,40 +755,51 @@ function loadHotkeysUI() {
 		label.className = "hotkey-action";
 		label.textContent = hotkeyLabels[actionId];
 
-		const btn = document.createElement("button");
-		btn.className = "hotkey-btn";
-		btn.textContent = formatHotkey(hotkeys[actionId]);
-		btn.addEventListener("click", () => recordHotkey(actionId, btn));
+		const button = document.createElement("button");
+		button.className = "hotkey-btn";
+		button.textContent = formatHotkey(hotkeys[actionId]);
+		button.addEventListener("click", () => recordHotkey(actionId, button));
 
 		row.appendChild(label);
-		row.appendChild(btn);
+		row.appendChild(button);
 		list.appendChild(row);
 	}
 }
 
-function recordHotkey(actionId: keyof HotkeyMap, btn: HTMLButtonElement) {
-	btn.classList.add("recording");
-	btn.textContent = "Press keys...";
+function loadHotkeysUI() {
+	populateHotkeysList();
+}
 
-	const handler = (e: KeyboardEvent) => {
-		e.preventDefault();
-		e.stopPropagation();
+function formatHotkey(hotkey: Hotkey) {
+	let label = "";
+	if (hotkey.mod) label += "⌘";
+	if (hotkey.shift) label += "⇧";
+	label += hotkey.key.toUpperCase();
+	return label;
+}
 
-		const key = e.key.toLowerCase();
-		if (key === "meta" || key === "control" || key === "shift" || key === "alt") return;
+function recordHotkey(actionId: keyof HotkeyMap, button: HTMLButtonElement) {
+	button.classList.add("recording");
+	button.textContent = "Press keys...";
+
+	const handler = (event: KeyboardEvent) => {
+		event.preventDefault();
+		event.stopPropagation();
+		const key = event.key.toLowerCase();
+		if (["meta", "control", "shift", "alt"].includes(key)) return;
 
 		const hotkey: Hotkey = {
-			mod: e.metaKey || e.ctrlKey,
-			shift: e.shiftKey,
+			mod: event.metaKey || event.ctrlKey,
+			shift: event.shiftKey,
 			key,
 		};
 
-		btn.classList.remove("recording");
-		btn.textContent = formatHotkey(hotkey);
+		button.classList.remove("recording");
+		button.textContent = formatHotkey(hotkey);
 
 		if (currentSettings) {
 			currentSettings.hotkeys[actionId] = hotkey;
-			persistSettings();
+			void persistSettings();
 		}
 
 		document.removeEventListener("keydown", handler, true);
@@ -545,109 +808,111 @@ function recordHotkey(actionId: keyof HotkeyMap, btn: HTMLButtonElement) {
 	document.addEventListener("keydown", handler, true);
 }
 
-// ─── MLX Controls ───
-mlxStart.addEventListener("click", async () => {
-	mlxStart.disabled = true;
-	mlxStart.textContent = "Starting...";
-	mlxStatusDot.className = "mlx-dot loading";
-	mlxStatusText.textContent = "Starting server (downloading model if needed)...";
-
-	const res = await electrobun.rpc!.request.startMLXServer({
-		model: mlxModel.value,
-		pythonPath: mlxPython.value.trim() || "python3",
-	});
-
-	if (res.success) {
-		setMLXOnline();
-	} else {
-		mlxStatusDot.className = "mlx-dot offline";
-		mlxStatusText.textContent = res.error ?? "Failed to start";
-		mlxStart.disabled = false;
-		mlxStart.textContent = "Start Server";
+async function persistSettings() {
+	if (!currentSettings) return;
+	currentSettings.openrouterKey = openrouterKey.value;
+	currentSettings.openrouterModel = openrouterModel.value;
+	const result = await electrobun.rpc!.request.saveSettings(currentSettings);
+	if (!result.success && result.error) {
+		console.error(result.error);
+		showAIStatus(result.error);
+		setTimeout(() => hideAIStatus(), 4000);
 	}
-});
-
-mlxStop.addEventListener("click", async () => {
-	await electrobun.rpc!.request.stopMLXServer({});
-	setMLXOffline();
-});
-
-function setMLXOnline() {
-	mlxStatusDot.className = "mlx-dot online";
-	mlxStatusText.textContent = "Server running";
-	mlxStart.style.display = "none";
-	mlxStop.style.display = "inline-flex";
-	mlxStart.disabled = false;
-	mlxStart.textContent = "Start Server";
 }
 
-function setMLXOffline() {
-	mlxStatusDot.className = "mlx-dot offline";
-	mlxStatusText.textContent = "Server not running";
-	mlxStart.style.display = "inline-flex";
-	mlxStop.style.display = "none";
-}
-
-async function refreshMLXStatus() {
-	const { running } = await electrobun.rpc!.request.getMLXStatus({});
-	if (running) setMLXOnline();
-	else setMLXOffline();
-}
-
-// ─── Whisper Controls ───
-whisperStart.addEventListener("click", async () => {
-	whisperStart.disabled = true;
-	whisperStart.textContent = "Starting...";
-	whisperStatusDot.className = "mlx-dot loading";
-	whisperStatusText.textContent = "Loading model (downloading if needed)...";
-
-	const res = await electrobun.rpc!.request.startWhisperServer({
-		model: whisperModel.value,
-		pythonPath: mlxPython.value.trim() || "python3",
+async function beginLocalAIInstall(profileId?: LocalAIProfileId) {
+	if (!currentSettings) return;
+	currentSettings.provider = "local";
+	setProviderUI("local");
+	await persistSettings();
+	const result = await electrobun.rpc!.request.installLocalAI({
+		profileId: profileId ?? currentSettings.localAI.selectedProfileId,
 	});
-
-	if (res.success) {
-		setWhisperOnline();
-	} else {
-		whisperStatusDot.className = "mlx-dot offline";
-		whisperStatusText.textContent = res.error ?? "Failed to start";
-		whisperStart.disabled = false;
-		whisperStart.textContent = "Start Server";
+	if (!result.accepted && result.error) {
+		localAIError.style.display = "block";
+		localAIErrorSummary.textContent = result.error;
+		localAIErrorBody.textContent = result.error;
 	}
+	await refreshLocalAIStatus();
+}
+
+localAIEnable.addEventListener("click", () => {
+	void beginLocalAIInstall();
 });
 
-whisperStop.addEventListener("click", async () => {
-	await electrobun.rpc!.request.stopWhisperServer({});
-	setWhisperOffline();
+localAIRetry.addEventListener("click", () => {
+	void beginLocalAIInstall();
 });
 
-function setWhisperOnline() {
-	whisperStatusDot.className = "mlx-dot online";
-	whisperStatusText.textContent = "Server running";
-	whisperStart.style.display = "none";
-	whisperStop.style.display = "inline-flex";
-	whisperStart.disabled = false;
-	whisperStart.textContent = "Start Server";
+localAICancel.addEventListener("click", async () => {
+	await electrobun.rpc!.request.cancelLocalAIInstall({});
+	await refreshLocalAIStatus();
+});
+
+localAIManage.addEventListener("click", () => {
+	localAIManageOpen = !localAIManageOpen;
+	renderLocalAIUI();
+});
+
+localAIAdvancedToggle.addEventListener("click", () => {
+	localAIAdvancedOpen = !localAIAdvancedOpen;
+	renderLocalAIUI();
+});
+
+async function setLocalAIProfile(profileId: LocalAIProfileId) {
+	if (!currentSettings) return;
+	currentSettings.localAI.selectedProfileId = profileId;
+	await electrobun.rpc!.request.setLocalAIProfile({ profileId });
+	const profile = getProfile(profileId);
+	if (profile) {
+		currentSettings.localAI.textModelId = profile.textModelId;
+		currentSettings.localAI.sttModelId = profile.sttModelId;
+		currentSettings.localAI.ttsModelId = profile.ttsModelId;
+	}
+	await persistSettings();
+	await refreshLocalAIStatus();
 }
 
-function setWhisperOffline() {
-	whisperStatusDot.className = "mlx-dot offline";
-	whisperStatusText.textContent = "Server not running";
-	whisperStart.style.display = "inline-flex";
-	whisperStop.style.display = "none";
+localAIProfileStarter.addEventListener("click", () => {
+	void setLocalAIProfile("starter");
+});
+
+localAIProfileQuality.addEventListener("click", () => {
+	void setLocalAIProfile("quality");
+});
+
+function wireAdvancedModelSelect(select: HTMLSelectElement, key: keyof LocalAISettings) {
+	select.addEventListener("change", () => {
+		if (!currentSettings) return;
+		currentSettings.localAI[key] = select.value as never;
+		void persistSettings();
+		renderLocalAIUI();
+	});
 }
 
-async function refreshWhisperStatus() {
-	const { running } = await electrobun.rpc!.request.getWhisperStatus({});
-	if (running) setWhisperOnline();
-	else setWhisperOffline();
-}
+wireAdvancedModelSelect(localAITextModel, "textModelId");
+wireAdvancedModelSelect(localAISttModel, "sttModelId");
+wireAdvancedModelSelect(localAITtsModel, "ttsModelId");
 
-// ─── Markdown formatting helpers ───
+localAIRepair.addEventListener("click", async () => {
+	await electrobun.rpc!.request.repairLocalAI({});
+	await refreshLocalAIStatus();
+});
+
+localAIRemove.addEventListener("click", async () => {
+	await electrobun.rpc!.request.removeLocalAI({});
+	if (currentSettings) {
+		currentSettings.provider = "openrouter";
+	}
+	localAIManageOpen = false;
+	localAIAdvancedOpen = false;
+	await loadSettingsUI();
+});
+
 function wrapSelection(before: string, after: string) {
-	const sel = window.getSelection();
-	if (!sel || sel.rangeCount === 0) return;
-	const range = sel.getRangeAt(0);
+	const selection = window.getSelection();
+	if (!selection || selection.rangeCount === 0) return;
+	const range = selection.getRangeAt(0);
 	const text = range.toString();
 	if (!text) return;
 
@@ -655,99 +920,94 @@ function wrapSelection(before: string, after: string) {
 	const node = document.createTextNode(`${before}${text}${after}`);
 	range.insertNode(node);
 
-	// Place cursor after the inserted text
-	const newRange = document.createRange();
-	newRange.setStartAfter(node);
-	newRange.collapse(true);
-	sel.removeAllRanges();
-	sel.addRange(newRange);
+	const nextRange = document.createRange();
+	nextRange.setStartAfter(node);
+	nextRange.collapse(true);
+	selection.removeAllRanges();
+	selection.addRange(nextRange);
 	updateWordCount();
 }
 
-// ─── Keyboard shortcuts ───
-document.addEventListener("keydown", (e) => {
-	const mod = e.metaKey || e.ctrlKey;
-
+document.addEventListener("keydown", (event) => {
+	const mod = event.metaKey || event.ctrlKey;
 	const inEditor = document.activeElement === editor || editor.contains(document.activeElement);
-	const key = e.key.toLowerCase();
+	const key = event.key.toLowerCase();
 
-	// ─── Standard editing (WKWebView needs explicit DOM handling) ───
-	if (mod && !e.shiftKey && key === "a" && inEditor) {
-		e.preventDefault();
-		const sel = window.getSelection();
-		if (sel) {
+	if (mod && !event.shiftKey && key === "a" && inEditor) {
+		event.preventDefault();
+		const selection = window.getSelection();
+		if (selection) {
 			const range = document.createRange();
 			range.selectNodeContents(editor);
-			sel.removeAllRanges();
-			sel.addRange(range);
+			selection.removeAllRanges();
+			selection.addRange(range);
 		}
-	} else if (mod && !e.shiftKey && key === "c") {
-		const sel = window.getSelection();
-		if (sel && sel.toString()) {
-			e.preventDefault();
-			navigator.clipboard.writeText(sel.toString());
+	} else if (mod && !event.shiftKey && key === "c") {
+		const selection = window.getSelection();
+		if (selection && selection.toString()) {
+			event.preventDefault();
+			void navigator.clipboard.writeText(selection.toString());
 		}
-	} else if (mod && !e.shiftKey && key === "x") {
-		const sel = window.getSelection();
-		if (sel && sel.toString() && inEditor) {
-			e.preventDefault();
-			navigator.clipboard.writeText(sel.toString());
-			sel.deleteFromDocument();
+	} else if (mod && !event.shiftKey && key === "x") {
+		const selection = window.getSelection();
+		if (selection && selection.toString() && inEditor) {
+			event.preventDefault();
+			void navigator.clipboard.writeText(selection.toString());
+			selection.deleteFromDocument();
 			updateWordCount();
 		}
-	} else if (mod && !e.shiftKey && key === "v" && inEditor) {
-		e.preventDefault();
-		navigator.clipboard.readText().then((text) => {
-			const sel = window.getSelection();
-			if (!sel || !sel.rangeCount) return;
-			const range = sel.getRangeAt(0);
+	} else if (mod && !event.shiftKey && key === "v" && inEditor) {
+		event.preventDefault();
+		void navigator.clipboard.readText().then((text) => {
+			const selection = window.getSelection();
+			if (!selection || !selection.rangeCount) return;
+			const range = selection.getRangeAt(0);
 			range.deleteContents();
 			range.insertNode(document.createTextNode(text));
 			range.collapse(false);
-			sel.removeAllRanges();
-			sel.addRange(range);
+			selection.removeAllRanges();
+			selection.addRange(range);
 			updateWordCount();
 		});
-	} else if (mod && !e.shiftKey && key === "z" && inEditor) {
-		e.preventDefault();
+	} else if (mod && !event.shiftKey && key === "z" && inEditor) {
+		event.preventDefault();
 		document.execCommand("undo");
-	} else if (mod && e.shiftKey && key === "z" && inEditor) {
-		e.preventDefault();
+	} else if (mod && event.shiftKey && key === "z" && inEditor) {
+		event.preventDefault();
 		document.execCommand("redo");
-
-	// ─── App shortcuts (driven by hotkey map) ───
 	} else {
-		const hk = currentSettings?.hotkeys ?? defaultHotkeys;
-		const matchesHotkey = (h: Hotkey) => h.mod === mod && h.shift === e.shiftKey && h.key === key;
+		const hotkeys = currentSettings?.hotkeys ?? defaultHotkeys;
+		const matchesHotkey = (hotkey: Hotkey) => hotkey.mod === mod && hotkey.shift === event.shiftKey && hotkey.key === key;
 
-		if (matchesHotkey(hk.zenMode)) {
-			e.preventDefault();
+		if (matchesHotkey(hotkeys.zenMode)) {
+			event.preventDefault();
 			toggleZen();
-		} else if (matchesHotkey(hk.fixGrammar)) {
-			e.preventDefault();
-			handleGrammarFix();
-		} else if (matchesHotkey(hk.aiChat)) {
-			e.preventDefault();
+		} else if (matchesHotkey(hotkeys.fixGrammar)) {
+			event.preventDefault();
+			void handleGrammarFix();
+		} else if (matchesHotkey(hotkeys.aiChat)) {
+			event.preventDefault();
 			toggleChat();
-		} else if (matchesHotkey(hk.toggleMarkdown)) {
-			e.preventDefault();
-			toggleMarkdownMode();
-		} else if (matchesHotkey(hk.bold)) {
-			e.preventDefault();
+		} else if (matchesHotkey(hotkeys.toggleMarkdown)) {
+			event.preventDefault();
+			void toggleMarkdownMode();
+		} else if (matchesHotkey(hotkeys.bold)) {
+			event.preventDefault();
 			wrapSelection("**", "**");
-		} else if (matchesHotkey(hk.italic)) {
-			e.preventDefault();
+		} else if (matchesHotkey(hotkeys.italic)) {
+			event.preventDefault();
 			wrapSelection("*", "*");
-		} else if (matchesHotkey(hk.link)) {
-			e.preventDefault();
+		} else if (matchesHotkey(hotkeys.link)) {
+			event.preventDefault();
 			wrapSelection("[", "](url)");
-		} else if (matchesHotkey(hk.code)) {
-			e.preventDefault();
+		} else if (matchesHotkey(hotkeys.code)) {
+			event.preventDefault();
 			wrapSelection("`", "`");
-		} else if (e.key === "Escape") {
+		} else if (event.key === "Escape") {
 			if (settingsPanel.classList.contains("open")) {
 				settingsPanel.classList.remove("open");
-				persistSettings();
+				stopLocalAIStatusPolling();
+				void persistSettings();
 			} else if (chatPanel.classList.contains("open")) {
 				chatPanel.classList.remove("open");
 			} else if (isZen) {
@@ -757,46 +1017,149 @@ document.addEventListener("keydown", (e) => {
 	}
 });
 
-// ─── Voice Mic Bar ───
-const micBtn = document.getElementById("mic-btn")!;
-const micHint = document.getElementById("mic-hint")!;
-const micStatus = document.getElementById("mic-status")!;
+function syncMicAnimation() {
+	if (micBtn.classList.contains("recording")) {
+		micAnimation.setSpeed(1.35);
+		micAnimation.play();
+		return;
+	}
 
-let mediaRecorder: MediaRecorder | null = null;
-let audioChunks: Blob[] = [];
-let isRecording = false;
-let holdMode = false;
-let holdTimer: ReturnType<typeof setTimeout> | null = null;
-let voiceClipboard = "";
-let lastCursorRange: Range | null = null;
+	if (micBtn.classList.contains("transcribing")) {
+		micAnimation.setSpeed(1);
+		micAnimation.play();
+		return;
+	}
+
+	micAnimation.stop();
+}
 
 function saveCursorPosition() {
-	const sel = window.getSelection();
-	if (sel && sel.rangeCount > 0 && editor.contains(sel.anchorNode)) {
-		lastCursorRange = sel.getRangeAt(0).cloneRange();
+	const selection = window.getSelection();
+	if (selection && selection.rangeCount > 0 && editor.contains(selection.anchorNode)) {
+		lastCursorRange = selection.getRangeAt(0).cloneRange();
+		positionMicAtCursor();
+	}
+}
+
+function positionMicAtCursor() {
+	const selection = window.getSelection();
+	if (!selection || selection.rangeCount === 0 || !editor.contains(selection.anchorNode)) {
+		micBtn.classList.remove("visible");
+		return;
+	}
+
+	const range = selection.getRangeAt(0);
+	const rect = range.getBoundingClientRect();
+	let x = rect.right;
+	let y = rect.top;
+
+	if (rect.width === 0 && rect.height === 0) {
+		const editorRect = editor.getBoundingClientRect();
+		x = editorRect.left;
+		y = editorRect.top;
+	}
+
+	const lineHeight = rect.height || 20;
+	micBtn.style.left = `${x + 8}px`;
+	micBtn.style.top = `${y + lineHeight / 2 - 14}px`;
+
+	if (!micBtn.classList.contains("recording") && !micBtn.classList.contains("transcribing")) {
+		micBtn.classList.add("visible");
 	}
 }
 
 function insertTextAtCursor(text: string) {
 	editor.focus();
-	const sel = window.getSelection();
-	if (!sel) return;
+	const selection = window.getSelection();
+	if (!selection) return;
 
 	if (lastCursorRange) {
-		sel.removeAllRanges();
-		sel.addRange(lastCursorRange);
+		selection.removeAllRanges();
+		selection.addRange(lastCursorRange);
 	}
 
-	const range = sel.getRangeAt(0);
+	const range = selection.getRangeAt(0);
 	range.deleteContents();
 	const node = document.createTextNode(text);
 	range.insertNode(node);
 	range.setStartAfter(node);
 	range.collapse(true);
-	sel.removeAllRanges();
-	sel.addRange(range);
+	selection.removeAllRanges();
+	selection.addRange(range);
 	lastCursorRange = range.cloneRange();
 	updateWordCount();
+}
+
+function encodeWav(chunks: Float32Array[], sampleRate: number) {
+	const length = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+	const buffer = new ArrayBuffer(44 + length * 2);
+	const view = new DataView(buffer);
+
+	function writeString(offset: number, value: string) {
+		for (let index = 0; index < value.length; index += 1) {
+			view.setUint8(offset + index, value.charCodeAt(index));
+		}
+	}
+
+	writeString(0, "RIFF");
+	view.setUint32(4, 36 + length * 2, true);
+	writeString(8, "WAVE");
+	writeString(12, "fmt ");
+	view.setUint32(16, 16, true);
+	view.setUint16(20, 1, true);
+	view.setUint16(22, 1, true);
+	view.setUint32(24, sampleRate, true);
+	view.setUint32(28, sampleRate * 2, true);
+	view.setUint16(32, 2, true);
+	view.setUint16(34, 16, true);
+	writeString(36, "data");
+	view.setUint32(40, length * 2, true);
+
+	let offset = 44;
+	for (const chunk of chunks) {
+		for (let index = 0; index < chunk.length; index += 1) {
+			const sample = Math.max(-1, Math.min(1, chunk[index]));
+			view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+			offset += 2;
+		}
+	}
+
+	return buffer;
+}
+
+async function finishRecording() {
+	if (recordedChunks.length === 0) return;
+
+	micBtn.classList.remove("recording");
+	micBtn.classList.add("transcribing");
+	micBtn.classList.add("visible");
+	micStatus.textContent = "transcribing...";
+	showAIStatus("transcribing voice...");
+	syncMicAnimation();
+
+	try {
+		const wavBuffer = encodeWav(recordedChunks, recordedSampleRate);
+		const base64 = btoa(String.fromCharCode(...new Uint8Array(wavBuffer)));
+		const { text } = await electrobun.rpc!.request.transcribeAudio({
+			audioPath: `base64:${base64}`,
+		});
+
+		if (text.trim()) {
+			voiceClipboard = text;
+			insertTextAtCursor(text);
+		}
+	} catch (error) {
+		console.error("Transcription failed:", error);
+		micStatus.textContent = "error";
+		setTimeout(() => {
+			micStatus.textContent = "";
+		}, 2000);
+	} finally {
+		micBtn.classList.remove("transcribing");
+		micStatus.textContent = "";
+		hideAIStatus();
+		syncMicAnimation();
+	}
 }
 
 async function startRecording() {
@@ -804,103 +1167,112 @@ async function startRecording() {
 	saveCursorPosition();
 
 	try {
-		const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-		audioChunks = [];
-		mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+		recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+		recordingContext = new AudioContext();
+		recordedSampleRate = recordingContext.sampleRate;
+		recordedChunks = [];
 
-		mediaRecorder.ondataavailable = (e) => {
-			if (e.data.size > 0) audioChunks.push(e.data);
+		recordingSource = recordingContext.createMediaStreamSource(recordingStream);
+		recordingProcessor = recordingContext.createScriptProcessor(4096, 1, 1);
+		recordingSilence = recordingContext.createGain();
+		recordingSilence.gain.value = 0;
+
+		recordingProcessor.onaudioprocess = (event) => {
+			if (!isRecording) return;
+			recordedChunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
 		};
 
-		mediaRecorder.onstop = async () => {
-			stream.getTracks().forEach((t) => t.stop());
-			if (audioChunks.length === 0) return;
+		recordingSource.connect(recordingProcessor);
+		recordingProcessor.connect(recordingSilence);
+		recordingSilence.connect(recordingContext.destination);
 
-			micBtn.classList.remove("recording");
-			micBtn.classList.add("transcribing");
-			micStatus.textContent = "transcribing...";
-			showAIStatus("transcribing voice...");
-
-			try {
-				const blob = new Blob(audioChunks, { type: "audio/webm" });
-				const buffer = await blob.arrayBuffer();
-				const base64 = btoa(
-					new Uint8Array(buffer).reduce((data, byte) => data + String.fromCharCode(byte), "")
-				);
-
-				const { text } = await electrobun.rpc!.request.transcribeAudio({
-					audioPath: `base64:${base64}`,
-				});
-
-				if (text.trim()) {
-					voiceClipboard = text;
-					insertTextAtCursor(text);
-					micHint.textContent = "⌘⌥V to re-paste";
-					setTimeout(() => { micHint.textContent = "click or hold to record"; }, 3000);
-				}
-			} catch (err) {
-				console.error("Transcription failed:", err);
-				micStatus.textContent = "error";
-				setTimeout(() => { micStatus.textContent = ""; }, 2000);
-			} finally {
-				micBtn.classList.remove("transcribing");
-				micStatus.textContent = "";
-				hideAIStatus();
-				isRecording = false;
-				holdMode = false;
-			}
-		};
-
-		mediaRecorder.start();
 		isRecording = true;
 		micBtn.classList.add("recording");
-		micStatus.textContent = "● recording";
-		micHint.textContent = "release or click to stop";
-	} catch (err) {
-		console.error("Mic access failed:", err);
+		micBtn.classList.add("visible");
+		micStatus.textContent = "● rec";
+		syncMicAnimation();
+	} catch (error) {
+		console.error("Mic access failed:", error);
 		micStatus.textContent = "mic denied";
-		setTimeout(() => { micStatus.textContent = ""; }, 2000);
+		setTimeout(() => {
+			micStatus.textContent = "";
+		}, 2000);
+		syncMicAnimation();
 	}
 }
 
 function stopRecording() {
-	if (!isRecording || !mediaRecorder) return;
-	mediaRecorder.stop();
+	if (!isRecording) return;
 	isRecording = false;
+	recordingSource?.disconnect();
+	recordingProcessor?.disconnect();
+	recordingSilence?.disconnect();
+	recordingStream?.getTracks().forEach((track) => track.stop());
+	void recordingContext?.close();
+	recordingSource = null;
+	recordingProcessor = null;
+	recordingSilence = null;
+	recordingStream = null;
+	recordingContext = null;
+	void finishRecording();
 }
 
-// Mode 1 & 2: Click to toggle record, OR hold to record + release to stop
-micBtn.addEventListener("mousedown", (e) => {
-	e.preventDefault();
+micBtn.addEventListener("mousedown", (event) => {
+	event.preventDefault();
 	if (isRecording) {
 		stopRecording();
 		return;
 	}
+
 	holdMode = false;
-	holdTimer = setTimeout(() => { holdMode = true; }, 200);
-	startRecording();
+	void (async () => {
+		const voiceInputReady = await ensureVoiceInputReady();
+		if (!voiceInputReady) return;
+
+		holdTimer = setTimeout(() => {
+			holdMode = true;
+		}, 200);
+		await startRecording();
+	})();
 });
 
 micBtn.addEventListener("mouseup", () => {
-	if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+	if (holdTimer) {
+		clearTimeout(holdTimer);
+		holdTimer = null;
+	}
 	if (holdMode && isRecording) stopRecording();
 });
 
 micBtn.addEventListener("mouseleave", () => {
-	if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+	if (holdTimer) {
+		clearTimeout(holdTimer);
+		holdTimer = null;
+	}
 	if (holdMode && isRecording) stopRecording();
 });
 
-// Mode 3: ⌘⌥V to paste from voice clipboard
-document.addEventListener("keydown", (e) => {
-	if ((e.metaKey || e.ctrlKey) && e.altKey && e.key.toLowerCase() === "v") {
-		e.preventDefault();
+document.addEventListener("keydown", (event) => {
+	if ((event.metaKey || event.ctrlKey) && event.altKey && event.key.toLowerCase() === "v") {
+		event.preventDefault();
 		if (voiceClipboard) insertTextAtCursor(voiceClipboard);
 	}
 }, true);
 
-// Track cursor position
 editor.addEventListener("mouseup", saveCursorPosition);
 editor.addEventListener("keyup", saveCursorPosition);
+editor.addEventListener("input", positionMicAtCursor);
+editor.addEventListener("focus", () => {
+	setTimeout(positionMicAtCursor, 0);
+});
+editor.addEventListener("blur", () => {
+	setTimeout(() => {
+		if (document.activeElement !== micBtn && !isRecording && !micBtn.classList.contains("transcribing")) {
+			micBtn.classList.remove("visible");
+		}
+	}, 150);
+});
 
+editor.addEventListener("input", updateWordCount);
+updateWordCount();
 editor.focus();

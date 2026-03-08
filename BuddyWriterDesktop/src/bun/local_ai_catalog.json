@@ -1,0 +1,94 @@
+{
+  "version": "2026-03-08.2",
+  "generatedAt": "2026-03-08T00:00:00.000Z",
+  "defaultProfileId": "starter",
+  "profiles": [
+    {
+      "id": "starter",
+      "label": "Starter",
+      "textModelId": "mlx-community/Qwen3.5-4B-4bit",
+      "sttModelId": "mlx-community/whisper-large-v3-turbo",
+      "ttsModelId": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit",
+      "approxBundleGB": 6.2
+    },
+    {
+      "id": "quality",
+      "label": "Better Quality",
+      "textModelId": "mlx-community/Qwen3.5-9B-4bit",
+      "sttModelId": "mlx-community/whisper-large-v3-turbo",
+      "ttsModelId": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit",
+      "approxBundleGB": 10.4
+    }
+  ],
+  "models": [
+    {
+      "id": "mlx-community/Qwen3.5-4B-4bit",
+      "kind": "text",
+      "label": "Qwen 3.5 4B",
+      "provider": "mlx-lm",
+      "quantization": "4-bit",
+      "approxDownloadGB": 2.4,
+      "recommendedFor": "starter"
+    },
+    {
+      "id": "mlx-community/Qwen3.5-9B-4bit",
+      "kind": "text",
+      "label": "Qwen 3.5 9B",
+      "provider": "mlx-lm",
+      "quantization": "4-bit",
+      "approxDownloadGB": 5.4,
+      "recommendedFor": "quality"
+    },
+    {
+      "id": "mlx-community/Qwen3.5-27B-4bit",
+      "kind": "text",
+      "label": "Qwen 3.5 27B",
+      "provider": "mlx-lm",
+      "quantization": "4-bit",
+      "approxDownloadGB": 15.2,
+      "recommendedFor": "power"
+    },
+    {
+      "id": "mlx-community/Qwen3-ASR-0.6B-4bit",
+      "kind": "stt",
+      "label": "Qwen 3 ASR 0.6B",
+      "provider": "mlx-audio",
+      "quantization": "4-bit",
+      "approxDownloadGB": 0.8,
+      "recommendedFor": "legacy",
+      "hidden": true,
+      "deprecated": true
+    },
+    {
+      "id": "mlx-community/whisper-large-v3-turbo",
+      "kind": "stt",
+      "label": "Whisper Large v3 Turbo",
+      "provider": "mlx-whisper",
+      "quantization": "mixed",
+      "approxDownloadGB": 1.6,
+      "recommendedFor": "starter"
+    },
+    {
+      "id": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit",
+      "kind": "tts",
+      "label": "Qwen 3 TTS 0.6B",
+      "provider": "mlx-audio",
+      "quantization": "4-bit",
+      "approxDownloadGB": 2.2,
+      "recommendedFor": "starter",
+      "defaultVoice": "Chelsie",
+      "defaultLanguage": "English"
+    },
+    {
+      "id": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit",
+      "kind": "tts",
+      "label": "Qwen 3 TTS 1.7B",
+      "provider": "mlx-audio",
+      "quantization": "4-bit",
+      "approxDownloadGB": 3.4,
+      "recommendedFor": "quality",
+      "defaultVoice": "Chelsie",
+      "defaultLanguage": "English"
+    }
+  ]
+}

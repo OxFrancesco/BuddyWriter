@@ -31,17 +31,17 @@
               <label class="settings-label">AI Provider</label>
               <div class="settings-toggle-group">
                 <button class="settings-toggle active" data-provider="openrouter">OpenRouter</button>
-                <button class="settings-toggle" data-provider="mlx">Local MLX</button>
+                <button class="settings-toggle" data-provider="local">Local AI</button>
               </div>
             </div>
 
             <!-- OpenRouter Settings -->
-	            <div id="openrouter-settings" class="settings-section">
-	              <label class="settings-label">OpenRouter API Key</label>
-	              <input type="password" id="openrouter-key" class="settings-input" placeholder="sk-or-..." />
-	              <p class="settings-hint">Stored in the OS keychain when available. Use <code>OPENROUTER_API_KEY</code> to preload or override it at launch.</p>
-	              <label class="settings-label">Model</label>
-	              <select id="openrouter-model" class="settings-select">
+            <div id="openrouter-settings" class="settings-section">
+              <label class="settings-label">OpenRouter API Key</label>
+              <input type="password" id="openrouter-key" class="settings-input" placeholder="sk-or-..." />
+              <p class="settings-hint">Stored in the OS keychain when available. Use <code>OPENROUTER_API_KEY</code> to preload or override it at launch.</p>
+              <label class="settings-label">Model</label>
+              <select id="openrouter-model" class="settings-select">
                 <option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
                 <option value="anthropic/claude-sonnet-4">Claude Sonnet 4</option>
                 <option value="openai/gpt-4.1-mini">GPT-4.1 Mini</option>
@@ -50,51 +50,102 @@
               </select>
             </div>
 
-            <!-- MLX Settings -->
-            <div id="mlx-settings" class="settings-section" style="display: none;">
-              <label class="settings-label">MLX Model</label>
-              <select id="mlx-model" class="settings-select">
-                <option value="mlx-community/Qwen3-4B-Instruct-2507-4bit">Qwen3 4B Instruct 2507 (2.3 GB)</option>
-                <option value="mlx-community/Qwen3-4B-4bit">Qwen3 4B (2.5 GB)</option>
-                <option value="mlx-community/Qwen3-8B-4bit">Qwen3 8B (5 GB)</option>
-                <option value="mlx-community/Qwen3-14B-4bit">Qwen3 14B (8-9 GB)</option>
-                <option value="mlx-community/Llama-3.2-3B-Instruct-4bit">Llama 3.2 3B (2 GB)</option>
-                <option value="mlx-community/Meta-Llama-3.1-8B-Instruct-4bit">Llama 3.1 8B (5 GB)</option>
-                <option value="mlx-community/gemma-3-4b-it-4bit">Gemma 3 4B (3 GB)</option>
-                <option value="mlx-community/Phi-4-mini-instruct-4bit">Phi-4 Mini (2.5 GB)</option>
-              </select>
-              <label class="settings-label">Python Path</label>
-              <input type="text" id="mlx-python" class="settings-input" placeholder="/usr/bin/python3 or .venv/bin/python3" />
-              <div id="mlx-status" class="mlx-status">
-                <span id="mlx-status-dot" class="mlx-dot offline"></span>
-                <span id="mlx-status-text">Server not running</span>
-              </div>
-              <div class="mlx-actions">
-                <button id="mlx-start" class="settings-btn-action">Start Server</button>
-                <button id="mlx-stop" class="settings-btn-action danger" style="display: none;">Stop Server</button>
-              </div>
-              <p class="settings-hint">Starts automatically on first use. Requires Apple Silicon and <code>pip install -U mlx-lm</code>. Models download on first use.</p>
-            </div>
+            <!-- Local AI -->
+            <div id="local-settings" class="settings-section" style="display: none;">
+              <div class="local-ai-card">
+                <div class="local-ai-header">
+                  <div>
+                    <label class="settings-label">Local AI</label>
+                    <div id="local-ai-headline" class="local-ai-headline">Enable Local AI</div>
+                  </div>
+                  <div id="local-ai-state-pill" class="local-ai-pill offline">Not installed</div>
+                </div>
 
-            <!-- Local Voice -->
-            <div class="settings-section">
-              <label class="settings-label">Voice Input (Local STT)</label>
-              <select id="whisper-model" class="settings-select">
-                <option value="mlx-community/whisper-large-v3-turbo">Whisper Large v3 Turbo (fastest best-quality)</option>
-                <option value="mlx-community/whisper-turbo">Whisper Turbo (809 MB)</option>
-                <option value="mlx-community/whisper-large-v3-mlx-4bit">Whisper Large v3 4-bit (best accuracy)</option>
-                <option value="mlx-community/whisper-small-mlx">Whisper Small MLX (244 MB)</option>
-                <option value="mlx-community/whisper-base-mlx">Whisper Base MLX (74 MB)</option>
-              </select>
-              <div id="whisper-status" class="mlx-status">
-                <span id="whisper-status-dot" class="mlx-dot offline"></span>
-                <span id="whisper-status-text">Server not running</span>
+                <p id="local-ai-summary" class="settings-hint">Download BuddyWriter's managed Apple Silicon runtime, text model, dictation model, and speech model with one button.</p>
+
+                <div id="local-ai-progress-shell" class="local-ai-progress-shell" style="display: none;">
+                  <div class="local-ai-progress-bar">
+                    <span id="local-ai-progress-fill"></span>
+                  </div>
+                  <div class="local-ai-progress-meta">
+                    <span id="local-ai-phase">Preparing local AI workspace</span>
+                    <span id="local-ai-progress-text">0%</span>
+                  </div>
+                </div>
+
+                <div id="local-ai-error" class="local-ai-error" style="display: none;">
+                  <div id="local-ai-error-summary" class="local-ai-error-summary"></div>
+                  <details class="local-ai-error-details">
+                    <summary>Details</summary>
+                    <pre id="local-ai-error-body"></pre>
+                  </details>
+                </div>
+
+                <div class="local-ai-actions">
+                  <button id="local-ai-enable" class="settings-btn-action primary">Enable Local AI</button>
+                  <button id="local-ai-manage" class="settings-btn-action" style="display: none;">Manage Local AI</button>
+                  <button id="local-ai-retry" class="settings-btn-action" style="display: none;">Retry</button>
+                  <button id="local-ai-cancel" class="settings-btn-action danger" style="display: none;">Cancel</button>
+                </div>
               </div>
-              <div class="mlx-actions">
-                <button id="whisper-start" class="settings-btn-action">Start Server</button>
-                <button id="whisper-stop" class="settings-btn-action danger" style="display: none;">Stop Server</button>
+
+              <div id="local-ai-manage-panel" class="local-ai-manage" style="display: none;">
+                <div class="local-ai-section">
+                  <label class="settings-label">Profile</label>
+                  <div class="local-ai-profile-grid">
+                    <button id="local-ai-profile-starter" class="local-ai-profile-btn" data-profile="starter">Starter</button>
+                    <button id="local-ai-profile-quality" class="local-ai-profile-btn" data-profile="quality">Better Quality</button>
+                  </div>
+                </div>
+
+                <div class="local-ai-meta-grid">
+                  <div class="local-ai-meta-item">
+                    <span class="settings-label">Install Location</span>
+                    <span id="local-ai-install-root" class="local-ai-meta-value"></span>
+                  </div>
+                  <div class="local-ai-meta-item">
+                    <span class="settings-label">Storage Used</span>
+                    <span id="local-ai-storage" class="local-ai-meta-value"></span>
+                  </div>
+                  <div class="local-ai-meta-item">
+                    <span class="settings-label">Text Model</span>
+                    <span id="local-ai-text-label" class="local-ai-meta-value"></span>
+                  </div>
+                  <div class="local-ai-meta-item">
+                    <span class="settings-label">Voice Input</span>
+                    <span id="local-ai-stt-label" class="local-ai-meta-value"></span>
+                  </div>
+                  <div class="local-ai-meta-item">
+                    <span class="settings-label">Voice Output</span>
+                    <span id="local-ai-tts-label" class="local-ai-meta-value"></span>
+                  </div>
+                  <div class="local-ai-meta-item">
+                    <span class="settings-label">Bundle Version</span>
+                    <span id="local-ai-bundle" class="local-ai-meta-value"></span>
+                  </div>
+                </div>
+
+                <button id="local-ai-advanced-toggle" class="local-ai-advanced-toggle" type="button">Advanced</button>
+
+                <div id="local-ai-advanced" class="local-ai-advanced" style="display: none;">
+                  <div class="settings-section">
+                    <label class="settings-label">Text Model</label>
+                    <select id="local-ai-text-model" class="settings-select"></select>
+                  </div>
+                  <div class="settings-section">
+                    <label class="settings-label">Voice Input Model</label>
+                    <select id="local-ai-stt-model" class="settings-select"></select>
+                  </div>
+                  <div class="settings-section">
+                    <label class="settings-label">Voice Output Model</label>
+                    <select id="local-ai-tts-model" class="settings-select"></select>
+                  </div>
+                  <div class="local-ai-actions">
+                    <button id="local-ai-repair" class="settings-btn-action">Repair / Reinstall</button>
+                    <button id="local-ai-remove" class="settings-btn-action danger">Remove Local AI</button>
+                  </div>
+                </div>
               </div>
-              <p class="settings-hint">Starts automatically on first dictation. Requires <code>pip install -U mlx-whisper</code> and <code>ffmpeg</code>. Models download on first use.</p>
             </div>
 
             <!-- Hotkeys -->
@@ -112,19 +163,24 @@
         <div id="editor" class="editor" contenteditable="true" spellcheck="false" data-placeholder="Start writing..."></div>
       </div>
 
-      <!-- Voice Mic Bar -->
-      <div id="mic-bar" class="mic-bar">
-        <div class="mic-bar-inner">
-          <span class="mic-hint mic-hint-left" id="mic-hint">click or hold to record</span>
-          <button id="mic-btn" class="mic-btn" title="Voice input">
-            <pre class="mic-ascii">  ╭───╮
-  │ ◉ │
-  ╰─┬─╯
-    │
-  ╭─┴─╮
-  ╰───╯</pre>
-          </button>
-          <span class="mic-hint mic-hint-right" id="mic-status"></span>
+      <!-- Floating Mic at Cursor -->
+      <button id="mic-btn" class="mic-btn" title="Voice input" aria-label="Voice input">
+        <div id="mic-lottie" class="mic-lottie" aria-hidden="true"></div>
+        <span class="mic-status" id="mic-status"></span>
+      </button>
+
+      <!-- Microphone permission modal -->
+      <div id="mic-permission-modal" class="permission-modal" aria-hidden="true">
+        <div class="permission-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="mic-permission-title">
+          <div class="permission-modal__eyebrow">Voice Input</div>
+          <h2 id="mic-permission-title" class="permission-modal__title">Allow microphone access</h2>
+          <p id="mic-permission-copy" class="permission-modal__copy">
+            BuddyWriter needs microphone access to record your voice and transcribe it into the editor.
+          </p>
+          <div class="permission-modal__actions">
+            <button id="mic-permission-cancel" class="permission-modal__button permission-modal__button--secondary">Not now</button>
+            <button id="mic-permission-confirm" class="permission-modal__button">Continue</button>
+          </div>
         </div>
       </div>
 
@@ -158,6 +214,8 @@
         <div class="grammar-spinner"></div>
         <span>Fixing grammar...</span>
       </div>
+
+      <audio id="tts-audio" preload="none"></audio>
     </div>
     <script type="module" src="index.js"></script>
   </body>
