@@ -677,6 +677,54 @@ body {
 	transition: background 0.2s, color 0.2s, border-color 0.2s;
 }
 
+.workspace-tree__file-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.workspace-tree__file {
+	flex: 1;
+	min-width: 0;
+}
+
+.workspace-tree__file-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.workspace-tree__file-menu {
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	border: 1px solid transparent;
+	border-radius: 8px;
+	background: transparent;
+	color: var(--text-dim);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	opacity: 0;
+	transition: opacity 0.2s ease, background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.workspace-tree__file-row:hover .workspace-tree__file-menu,
+.workspace-tree__file-row.menu-open .workspace-tree__file-menu,
+.workspace-tree__file.active + .workspace-tree__file-menu {
+	opacity: 1;
+}
+
+.workspace-tree__file-menu:hover,
+.workspace-tree__file-menu:focus-visible,
+.workspace-tree__file-row.menu-open .workspace-tree__file-menu {
+	background: rgba(255, 255, 255, 0.06);
+	border-color: rgba(148, 163, 184, 0.14);
+	color: var(--text);
+	outline: none;
+}
+
 .workspace-tree__directory {
 	cursor: default;
 }
@@ -716,6 +764,65 @@ body {
 	color: var(--text-dim);
 }
 
+.workspace-tree__file-settings {
+	margin: 6px 0 10px 24px;
+	padding: 10px;
+	border-radius: 12px;
+	border: 1px solid rgba(148, 163, 184, 0.1);
+	background: rgba(255, 255, 255, 0.03);
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.workspace-tree__file-settings input,
+.workspace-tree__file-settings select,
+.workspace-tree__file-settings button {
+	border-radius: 8px;
+	border: 1px solid var(--border);
+	background: rgba(255, 255, 255, 0.03);
+	color: var(--text);
+	font-family: var(--font-sans);
+	font-size: 12px;
+}
+
+.workspace-tree__file-settings input,
+.workspace-tree__file-settings select {
+	width: 100%;
+	padding: 8px 10px;
+	outline: none;
+}
+
+.workspace-tree__file-settings input::placeholder {
+	color: var(--text-dim);
+}
+
+.workspace-tree__file-settings input:focus,
+.workspace-tree__file-settings select:focus {
+	border-color: rgba(148, 163, 184, 0.28);
+	background: rgba(255, 255, 255, 0.05);
+}
+
+.workspace-tree__file-settings-row {
+	display: flex;
+	gap: 8px;
+}
+
+.workspace-tree__file-settings select {
+	flex: 1;
+}
+
+.workspace-tree__file-settings button {
+	padding: 8px 10px;
+	cursor: pointer;
+	transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+.workspace-tree__file-settings button:hover {
+	background: rgba(255, 255, 255, 0.08);
+	border-color: rgba(148, 163, 184, 0.24);
+}
+
 .editor-stage {
 	flex: 1;
 	min-width: 0;
@@ -735,6 +842,7 @@ body {
 
 .document-header__text {
 	min-width: 0;
+	flex: 1;
 }
 
 .document-title {
@@ -755,6 +863,37 @@ body {
 	word-break: break-word;
 }
 
+.document-badges {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 8px;
+}
+
+.document-badge {
+	padding: 4px 10px;
+	border-radius: 999px;
+	border: 1px solid rgba(148, 163, 184, 0.14);
+	background: rgba(255, 255, 255, 0.04);
+	font-family: var(--font-mono);
+	font-size: 10px;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--text-muted);
+}
+
+.document-badge.archive {
+	color: #fbbf24;
+	border-color: rgba(251, 191, 36, 0.22);
+	background: rgba(251, 191, 36, 0.08);
+}
+
+.document-badge.project {
+	color: #93c5fd;
+	border-color: rgba(147, 197, 253, 0.22);
+	background: rgba(59, 130, 246, 0.08);
+}
+
 .save-status {
 	flex-shrink: 0;
 	font-family: var(--font-mono);
@@ -762,6 +901,7 @@ body {
 	letter-spacing: 0.06em;
 	text-transform: uppercase;
 	color: var(--text-dim);
+	text-align: right;
 }
 
 .save-status.saving,

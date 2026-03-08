@@ -8,14 +8,24 @@
 		"dev": "electrobun dev --watch",
 		"build": "electrobun build",
 		"typecheck": "tsc --noEmit -p tsconfig.json",
+		"test": "vitest run",
+		"test:watch": "vitest",
 		"build:canary": "electrobun build --env=canary"
 	},
 	"dependencies": {
 		"electrobun": "1.15.1",
-		"lottie-web": "^5.13.0"
+		"lottie-web": "^5.13.0",
+		"react": "19.1.0",
+		"react-dom": "19.1.0"
 	},
 	"devDependencies": {
+		"@testing-library/react": "^16.3.2",
+		"@testing-library/user-event": "^14.6.1",
 		"@types/bun": "latest",
-		"typescript": "^5.7.2"
+		"@types/react": "19.1.12",
+		"@types/react-dom": "19.1.9",
+		"jsdom": "^28.1.0",
+		"typescript": "^5.7.2",
+		"vitest": "^4.0.18"
 	}
 }
