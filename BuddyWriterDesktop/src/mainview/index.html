@@ -9,7 +9,7 @@
   <body>
     <div id="app" class="app">
       <!-- Titlebar drag region (for hiddenInset titlebar) -->
-      <div class="titlebar" electrobun-drag-region>
+      <div class="titlebar electrobun-webkit-app-region-drag">
         <button id="settings-btn" class="settings-btn" title="Settings">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
@@ -33,6 +33,15 @@
                 <button class="settings-toggle active" data-provider="openrouter">OpenRouter</button>
                 <button class="settings-toggle" data-provider="local">Local AI</button>
               </div>
+            </div>
+
+            <div class="settings-section">
+              <label class="settings-label">Workspace Folder</label>
+              <input type="text" id="workspace-path-input" class="settings-input" placeholder="/Users/you/Documents/BuddyWriter" />
+              <div class="settings-inline-actions">
+                <button id="workspace-path-apply" class="settings-btn-action">Use Folder</button>
+              </div>
+              <p class="settings-hint">BuddyWriter stores your notes as real <code>.md</code> files inside this folder, with workspace metadata in <code>.buddywriter/</code>.</p>
             </div>
 
             <!-- OpenRouter Settings -->
@@ -158,9 +167,33 @@
         </div>
       </div>
 
-      <!-- Main writing area -->
-      <div class="editor-container">
-        <div id="editor" class="editor" contenteditable="true" spellcheck="false" data-placeholder="Start writing..."></div>
+      <div class="workspace-shell">
+        <aside class="workspace-sidebar">
+          <div class="workspace-sidebar__header">
+            <div class="workspace-sidebar__eyebrow">Workspace</div>
+            <div id="workspace-name" class="workspace-sidebar__name">BuddyWriter</div>
+            <div id="workspace-path" class="workspace-sidebar__path"></div>
+          </div>
+          <div class="workspace-sidebar__actions">
+            <button id="new-note-btn" class="workspace-sidebar__action">New Note</button>
+            <button id="new-folder-btn" class="workspace-sidebar__action">New Folder</button>
+          </div>
+          <div id="workspace-tree" class="workspace-tree"></div>
+        </aside>
+
+        <main class="editor-stage">
+          <div class="document-header">
+            <div class="document-header__text">
+              <h1 id="document-title" class="document-title">Untitled</h1>
+              <div id="document-meta" class="document-meta"></div>
+            </div>
+            <div id="save-status" class="save-status">Saved</div>
+          </div>
+
+          <div class="editor-container">
+            <div id="editor" class="editor" contenteditable="true" spellcheck="false" data-placeholder="Start writing..."></div>
+          </div>
+        </main>
       </div>
 
       <!-- Floating Mic at Cursor -->
@@ -192,7 +225,7 @@
 
       <!-- AI Chat Panel (hidden by default, slides from right) -->
       <div id="chat-panel" class="chat-panel">
-        <div class="chat-header">
+        <div class="chat-header electrobun-webkit-app-region-drag">
           <span class="chat-title">AI Assistant</span>
           <button id="chat-close" class="chat-close">&times;</button>
         </div>

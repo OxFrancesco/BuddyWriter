@@ -5,20 +5,21 @@ import {
 	Utils,
 	type RPCSchema,
 } from "electrobun/bun";
-import { dirname, join } from "path";
+import { basename, dirname, extname, join, normalize, relative, resolve, sep } from "path";
 import {
 	existsSync,
 	lstatSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
 	unlinkSync,
 	writeFileSync,
 } from "fs";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { type Subprocess, spawn } from "bun";
 import bundledCatalog from "./local_ai_catalog.json";
 
@@ -48,6 +49,7 @@ type LocalAIInstallStep =
 	| "packages"
 	| "cache"
 	| "text_model"
+	| "grammar_model"
 	| "stt_model"
 	| "tts_model"
 	| "verify";
@@ -73,6 +75,7 @@ type LocalAIProfile = {
 	id: LocalAIProfileId;
 	label: string;
 	textModelId: string;
+	grammarModelId: string;
 	sttModelId: string;
 	ttsModelId: string;
 	approxBundleGB: number;
@@ -91,6 +94,7 @@ type LocalAISettings = {
 	installState: LocalAIInstallState;
 	selectedProfileId: LocalAIProfileId;
 	textModelId: string;
+	grammarModelId: string;
 	sttModelId: string;
 	ttsModelId: string;
 	catalogVersion: string | null;
@@ -103,8 +107,30 @@ type Settings = {
 	provider: "openrouter" | "local";
 	openrouterKey: string;
 	openrouterModel: string;
+	workspacePath: string;
 	localAI: LocalAISettings;
 	hotkeys: HotkeyMap;
+};
+
+type WorkspaceTreeEntry = {
+	kind: "file" | "directory";
+	name: string;
+	relativePath: string;
+	children?: WorkspaceTreeEntry[];
+};
+
+type WorkspaceMetadata = {
+	lastOpenDocument: string | null;
+};
+
+type WorkspaceStateResponse = {
+	workspacePath: string;
+	tree: WorkspaceTreeEntry[];
+	activeDocument: {
+		relativePath: string;
+		name: string;
+		content: string;
+	} | null;
 };
 
 type PersistedSettings = Omit<Settings, "openrouterKey">;
@@ -122,6 +148,7 @@ type LocalAIStatusResponse = {
 	catalogVersion: string | null;
 	installBundleVersion: string | null;
 	textModelId: string;
+	grammarModelId: string;
 	sttModelId: string;
 	ttsModelId: string;
 };
@@ -136,6 +163,7 @@ type LocalAIRuntimeStatus = {
 	installPlan: {
 		profileId: LocalAIProfileId;
 		textModelId: string;
+		grammarModelId: string;
 		sttModelId: string;
 		ttsModelId: string;
 		bundleVersion: string;
@@ -158,6 +186,7 @@ type LocalAIDiagnostics = {
 	profileId: LocalAIProfileId;
 	models: {
 		text: string;
+		grammar: string;
 		stt: string;
 		tts: string;
 	};
@@ -171,11 +200,13 @@ type LocalAIDiagnostics = {
 		venvReady: boolean;
 		packagesReady: boolean;
 		textModelCached: boolean;
+		grammarModelCached: boolean;
 		sttModelCached: boolean;
 		ttsModelCached: boolean;
 	};
 	sidecars: {
 		text: { pid: number | null; healthy: boolean; modelId: string | null };
+		grammar: { pid: number | null; healthy: boolean; modelId: string | null };
 		stt: { pid: number | null; healthy: boolean; modelId: string | null };
 		tts: { pid: number | null; healthy: boolean; modelId: string | null };
 	};
@@ -191,6 +222,7 @@ type SidecarState = {
 	proc: Subprocess | null;
 	modelId: string | null;
 	logs: string[];
+	idleTimer: ReturnType<typeof setTimeout> | null;
 };
 
 type LocalAIProfileSummary = {
@@ -202,6 +234,7 @@ type LocalAIProfileSummary = {
 type LegacySettings = Partial<{
 	provider: "openrouter" | "mlx" | "local";
 	openrouterModel: string;
+	workspacePath: string;
 	mlxModel: string;
 	mlxPythonPath: string;
 	whisperModel: string;
@@ -216,10 +249,17 @@ const LOCAL_AI_REMOTE_CATALOG_URL = Bun.env.BUDDYWRITER_LOCAL_AI_CATALOG_URL?.tr
 const UV_INSTALL_SCRIPT_URL = "https://astral.sh/uv/install.sh";
 const DEFAULT_UV_PYTHON = "3.12.7";
 const MLX_PORT = 8079;
+const GRAMMAR_PORT = 8080;
 const STT_PORT = 8765;
 const TTS_PORT = 8766;
+const TEXT_SIDECAR_IDLE_MS = 3 * 60_000;
+const GRAMMAR_SIDECAR_IDLE_MS = 3 * 60_000;
+const STT_SIDECAR_IDLE_MS = 60_000;
+const TTS_SIDECAR_IDLE_MS = 60_000;
+const TTS_AUDIO_RETENTION_MS = 10 * 60_000;
 const settingsDir = Utils.paths.userData;
 const settingsPath = join(settingsDir, "settings.json");
+const defaultWorkspaceRoot = join(homedir(), "Documents", "BuddyWriter");
 const localAIRoot = join(Utils.paths.userData, "local-ai");
 const localAIBinDir = join(localAIRoot, "bin");
 const localAIPythonDir = join(localAIRoot, "python");
@@ -265,6 +305,7 @@ function createDefaultLocalAISettings(catalog: LocalAICatalog): LocalAISettings 
 		installState: "not_installed",
 		selectedProfileId: profile.id,
 		textModelId: profile.textModelId,
+		grammarModelId: profile.grammarModelId,
 		sttModelId: profile.sttModelId,
 		ttsModelId: profile.ttsModelId,
 		catalogVersion: catalog.version,
@@ -278,6 +319,7 @@ const defaultSettings: Settings = {
 	provider: "openrouter",
 	openrouterKey: Bun.env.OPENROUTER_API_KEY ?? "",
 	openrouterModel: "google/gemini-2.5-flash",
+	workspacePath: defaultWorkspaceRoot,
 	localAI: createDefaultLocalAISettings(defaultCatalog),
 	hotkeys: defaultHotkeys,
 };
@@ -506,6 +548,7 @@ function normalizeLocalAISettings(value?: Partial<LocalAISettings>): LocalAISett
 		installState: value?.installState ?? defaults.installState,
 		selectedProfileId: profile.id,
 		textModelId: value?.textModelId ?? profile.textModelId,
+		grammarModelId: value?.grammarModelId ?? profile.grammarModelId,
 		sttModelId: value?.sttModelId ?? profile.sttModelId,
 		ttsModelId: value?.ttsModelId ?? profile.ttsModelId,
 		catalogVersion: value?.catalogVersion ?? currentCatalog.version,
@@ -524,6 +567,7 @@ function migrateSettings(raw: LegacySettings): Settings {
 		provider: raw.provider === "mlx" ? "local" : (raw.provider ?? defaultSettings.provider),
 		openrouterKey: defaultSettings.openrouterKey,
 		openrouterModel: raw.openrouterModel ?? defaultSettings.openrouterModel,
+		workspacePath: raw.workspacePath?.trim() || defaultWorkspaceRoot,
 		localAI,
 		hotkeys: raw.hotkeys ?? defaultHotkeys,
 	};
@@ -543,6 +587,7 @@ function saveSettingsToDisk(settings: Settings) {
 	const persisted: PersistedSettings = {
 		provider: settings.provider,
 		openrouterModel: settings.openrouterModel,
+		workspacePath: settings.workspacePath,
 		localAI: settings.localAI,
 		hotkeys: settings.hotkeys,
 	};
@@ -550,6 +595,272 @@ function saveSettingsToDisk(settings: Settings) {
 }
 
 let settings = loadSettings();
+settings.workspacePath = normalizeWorkspaceRootPath(settings.workspacePath);
+
+function normalizeWorkspaceRootPath(workspacePath?: string) {
+	return resolve((workspacePath ?? "").trim() || defaultWorkspaceRoot);
+}
+
+function getWorkspaceMetaDir(workspacePath: string) {
+	return join(workspacePath, ".buddywriter");
+}
+
+function getWorkspaceMetadataPath(workspacePath: string) {
+	return join(getWorkspaceMetaDir(workspacePath), "workspace.json");
+}
+
+function isInsideWorkspace(workspacePath: string, candidatePath: string) {
+	const rootPath = resolve(workspacePath);
+	const resolvedCandidate = resolve(candidatePath);
+	return resolvedCandidate === rootPath || resolvedCandidate.startsWith(`${rootPath}${sep}`);
+}
+
+function resolveWorkspaceRelativePath(workspacePath: string, relativePath = "") {
+	const rootPath = resolve(workspacePath);
+	const resolvedPath = resolve(rootPath, relativePath);
+	if (!isInsideWorkspace(rootPath, resolvedPath)) {
+		throw new Error("Path is outside the current workspace.");
+	}
+	return resolvedPath;
+}
+
+function workspaceRelativePath(workspacePath: string, absolutePath: string) {
+	const rootPath = resolve(workspacePath);
+	const resolvedPath = resolve(absolutePath);
+	if (!isInsideWorkspace(rootPath, resolvedPath)) {
+		throw new Error("Path is outside the current workspace.");
+	}
+	return relative(rootPath, resolvedPath).replaceAll("\\", "/");
+}
+
+function writeTextFileAtomic(path: string, value: string) {
+	ensureDir(dirname(path));
+	const tempPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+	writeFileSync(tempPath, value, "utf-8");
+	renameSync(tempPath, path);
+}
+
+function readTextFile(path: string) {
+	return readFileSync(path, "utf-8");
+}
+
+function sanitizeEntryName(name: string, fallback: string, kind: "file" | "directory") {
+	const leaf = name.trim().replaceAll("\\", "/").split("/").filter(Boolean).at(-1) ?? "";
+	const collapsed = leaf.replace(/[<>:"|?*\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim();
+	let safeName = collapsed.replace(/^\.+/, "").trim() || fallback;
+
+	if (kind === "file" && extname(safeName).toLowerCase() !== ".md") {
+		safeName = `${safeName}.md`;
+	}
+
+	return safeName;
+}
+
+function ensureWorkspaceStructure(workspacePath: string) {
+	const normalizedWorkspacePath = normalizeWorkspaceRootPath(workspacePath);
+	[
+		normalizedWorkspacePath,
+		join(normalizedWorkspacePath, "Inbox"),
+		join(normalizedWorkspacePath, "Projects"),
+		join(normalizedWorkspacePath, "Archive"),
+		getWorkspaceMetaDir(normalizedWorkspacePath),
+	].forEach(ensureDir);
+
+	const defaultNotePath = join(normalizedWorkspacePath, "Inbox", "Untitled.md");
+	if (!existsSync(defaultNotePath)) {
+		writeTextFileAtomic(defaultNotePath, "");
+	}
+}
+
+function readWorkspaceMetadata(workspacePath: string): WorkspaceMetadata {
+	const metadata = readJsonFile<WorkspaceMetadata>(getWorkspaceMetadataPath(workspacePath));
+	return {
+		lastOpenDocument: metadata?.lastOpenDocument ?? null,
+	};
+}
+
+function writeWorkspaceMetadata(workspacePath: string, metadata: WorkspaceMetadata) {
+	writeJsonFile(getWorkspaceMetadataPath(workspacePath), metadata);
+}
+
+function sortWorkspaceEntries(names: string[]) {
+	return names.sort((left, right) => left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }));
+}
+
+function listWorkspaceTree(workspacePath: string, relativeDir = ""): WorkspaceTreeEntry[] {
+	const absoluteDir = resolveWorkspaceRelativePath(workspacePath, relativeDir);
+	const names = sortWorkspaceEntries(readdirSync(absoluteDir).filter((name) => name !== ".buddywriter" && !name.startsWith(".")));
+	const directories: WorkspaceTreeEntry[] = [];
+	const files: WorkspaceTreeEntry[] = [];
+
+	for (const name of names) {
+		const relativePath = relativeDir ? `${relativeDir}/${name}` : name;
+		const absolutePath = resolveWorkspaceRelativePath(workspacePath, relativePath);
+		const stats = statSync(absolutePath);
+
+		if (stats.isDirectory()) {
+			directories.push({
+				kind: "directory",
+				name,
+				relativePath,
+				children: listWorkspaceTree(workspacePath, relativePath),
+			});
+			continue;
+		}
+
+		if (stats.isFile() && extname(name).toLowerCase() === ".md") {
+			files.push({
+				kind: "file",
+				name,
+				relativePath,
+			});
+		}
+	}
+
+	return [...directories, ...files];
+}
+
+function findFirstDocument(entries: WorkspaceTreeEntry[]): string | null {
+	for (const entry of entries) {
+		if (entry.kind === "file") return entry.relativePath;
+		const nested = findFirstDocument(entry.children ?? []);
+		if (nested) return nested;
+	}
+	return null;
+}
+
+function ensureUniquePath(parentDir: string, requestedName: string, kind: "file" | "directory") {
+	const extension = kind === "file" ? extname(requestedName) : "";
+	const stem = kind === "file" ? basename(requestedName, extension) : requestedName;
+	let counter = 1;
+	let candidate = requestedName;
+
+	while (existsSync(join(parentDir, candidate))) {
+		counter += 1;
+		candidate = kind === "file" ? `${stem} ${counter}${extension}` : `${stem} ${counter}`;
+	}
+
+	return candidate;
+}
+
+function getDocumentResponse(workspacePath: string, relativePath: string) {
+	const absolutePath = resolveWorkspaceRelativePath(workspacePath, relativePath);
+	if (!existsSync(absolutePath) || statSync(absolutePath).isDirectory() || extname(absolutePath).toLowerCase() !== ".md") {
+		throw new Error("Document not found.");
+	}
+	return {
+		relativePath,
+		name: basename(relativePath),
+		content: readTextFile(absolutePath),
+	};
+}
+
+function getWorkspaceState(workspacePath = settings.workspacePath): WorkspaceStateResponse {
+	const normalizedWorkspacePath = normalizeWorkspaceRootPath(workspacePath);
+	ensureWorkspaceStructure(normalizedWorkspacePath);
+	const tree = listWorkspaceTree(normalizedWorkspacePath);
+	const metadata = readWorkspaceMetadata(normalizedWorkspacePath);
+	let activeDocumentPath = metadata.lastOpenDocument;
+
+	if (activeDocumentPath) {
+		try {
+			const candidatePath = resolveWorkspaceRelativePath(normalizedWorkspacePath, activeDocumentPath);
+			if (!existsSync(candidatePath) || statSync(candidatePath).isDirectory() || extname(candidatePath).toLowerCase() !== ".md") {
+				activeDocumentPath = null;
+			}
+		} catch {
+			activeDocumentPath = null;
+		}
+	}
+
+	if (!activeDocumentPath) {
+		activeDocumentPath = findFirstDocument(tree);
+	}
+
+	if (!activeDocumentPath) {
+		const fallbackPath = "Inbox/Untitled.md";
+		writeTextFileAtomic(resolveWorkspaceRelativePath(normalizedWorkspacePath, fallbackPath), "");
+		activeDocumentPath = fallbackPath;
+	}
+
+	if (metadata.lastOpenDocument !== activeDocumentPath) {
+		writeWorkspaceMetadata(normalizedWorkspacePath, { ...metadata, lastOpenDocument: activeDocumentPath });
+	}
+
+	return {
+		workspacePath: normalizedWorkspacePath,
+		tree,
+		activeDocument: activeDocumentPath ? getDocumentResponse(normalizedWorkspacePath, activeDocumentPath) : null,
+	};
+}
+
+function setWorkspacePath(workspacePath: string) {
+	const normalizedWorkspacePath = normalizeWorkspaceRootPath(workspacePath);
+	ensureWorkspaceStructure(normalizedWorkspacePath);
+	settings.workspacePath = normalizedWorkspacePath;
+	saveSettingsToDisk(settings);
+	return getWorkspaceState(normalizedWorkspacePath);
+}
+
+function openWorkspaceDocument(relativePath: string) {
+	const workspacePath = normalizeWorkspaceRootPath(settings.workspacePath);
+	ensureWorkspaceStructure(workspacePath);
+	const document = getDocumentResponse(workspacePath, normalize(relativePath).replaceAll("\\", "/"));
+	writeWorkspaceMetadata(workspacePath, {
+		...readWorkspaceMetadata(workspacePath),
+		lastOpenDocument: document.relativePath,
+	});
+	return document;
+}
+
+function saveWorkspaceDocument(relativePath: string, content: string) {
+	const workspacePath = normalizeWorkspaceRootPath(settings.workspacePath);
+	const normalizedRelativePath = normalize(relativePath).replaceAll("\\", "/");
+	const absolutePath = resolveWorkspaceRelativePath(workspacePath, normalizedRelativePath);
+	if (extname(absolutePath).toLowerCase() !== ".md") {
+		throw new Error("Only Markdown documents can be saved.");
+	}
+	writeTextFileAtomic(absolutePath, content);
+	writeWorkspaceMetadata(workspacePath, {
+		...readWorkspaceMetadata(workspacePath),
+		lastOpenDocument: normalizedRelativePath,
+	});
+	return { success: true, savedAt: new Date().toISOString() };
+}
+
+function createWorkspaceDocument(parentRelativePath?: string, requestedName?: string) {
+	const workspacePath = normalizeWorkspaceRootPath(settings.workspacePath);
+	ensureWorkspaceStructure(workspacePath);
+	const baseRelativePath = parentRelativePath?.trim() ? normalize(parentRelativePath).replaceAll("\\", "/") : "Inbox";
+	const requestedAbsolutePath = resolveWorkspaceRelativePath(workspacePath, baseRelativePath);
+	const parentDir = existsSync(requestedAbsolutePath) && statSync(requestedAbsolutePath).isDirectory()
+		? requestedAbsolutePath
+		: dirname(requestedAbsolutePath);
+	const safeName = sanitizeEntryName(requestedName ?? "Untitled", "Untitled", "file");
+	const uniqueName = ensureUniquePath(parentDir, safeName, "file");
+	const filePath = join(parentDir, uniqueName);
+	writeTextFileAtomic(filePath, "");
+	const relativePath = workspaceRelativePath(workspacePath, filePath);
+	writeWorkspaceMetadata(workspacePath, {
+		...readWorkspaceMetadata(workspacePath),
+		lastOpenDocument: relativePath,
+	});
+	return getWorkspaceState(workspacePath);
+}
+
+function createWorkspaceFolder(parentRelativePath?: string, requestedName?: string) {
+	const workspacePath = normalizeWorkspaceRootPath(settings.workspacePath);
+	ensureWorkspaceStructure(workspacePath);
+	const baseRelativePath = parentRelativePath?.trim() ? normalize(parentRelativePath).replaceAll("\\", "/") : "Projects";
+	const requestedAbsolutePath = resolveWorkspaceRelativePath(workspacePath, baseRelativePath);
+	const parentDir = existsSync(requestedAbsolutePath) && statSync(requestedAbsolutePath).isDirectory()
+		? requestedAbsolutePath
+		: dirname(requestedAbsolutePath);
+	const safeName = sanitizeEntryName(requestedName ?? "New Folder", "New Folder", "directory");
+	const uniqueName = ensureUniquePath(parentDir, safeName, "directory");
+	ensureDir(join(parentDir, uniqueName));
+	return getWorkspaceState(workspacePath);
+}
 
 function syncOpenRouterKeyFromSecureStorage() {
 	const envKey = Bun.env.OPENROUTER_API_KEY?.trim();
@@ -662,6 +973,7 @@ function reuseExistingModelCache(modelId: string) {
 function reuseExistingSelectedModelCaches() {
 	setRuntimeStatus({ currentPhase: "Checking for existing model files", progressPct: 46 });
 	reuseExistingModelCache(settings.localAI.textModelId);
+	reuseExistingModelCache(settings.localAI.grammarModelId);
 	reuseExistingModelCache(settings.localAI.sttModelId);
 	reuseExistingModelCache(settings.localAI.ttsModelId);
 }
@@ -698,6 +1010,7 @@ function loadCatalog(): LocalAICatalog {
 loadCatalog();
 settings.localAI = normalizeLocalAISettings(settings.localAI);
 settings.localAI.catalogVersion = currentCatalog.version;
+ensureWorkspaceStructure(settings.workspacePath);
 saveSettingsToDisk(settings);
 
 async function refreshCatalogFromRemote() {
@@ -766,6 +1079,7 @@ function createInstallPlan(profileId: LocalAIProfileId) {
 	return {
 		profileId,
 		textModelId: settings.localAI.textModelId,
+		grammarModelId: settings.localAI.grammarModelId,
 		sttModelId: settings.localAI.sttModelId,
 		ttsModelId: settings.localAI.ttsModelId,
 		bundleVersion: formatLocalAIBundleVersion(profileId),
@@ -803,6 +1117,7 @@ function canResumeInstall(profileId: LocalAIProfileId) {
 	return plan.bundleVersion === bundleVersion
 		&& plan.profileId === profileId
 		&& plan.textModelId === settings.localAI.textModelId
+		&& plan.grammarModelId === settings.localAI.grammarModelId
 		&& plan.sttModelId === settings.localAI.sttModelId
 		&& plan.ttsModelId === settings.localAI.ttsModelId;
 }
@@ -853,6 +1168,7 @@ function getLocalAIStatus(): LocalAIStatusResponse {
 		catalogVersion: settings.localAI.catalogVersion,
 		installBundleVersion: settings.localAI.installBundleVersion,
 		textModelId: settings.localAI.textModelId,
+		grammarModelId: settings.localAI.grammarModelId,
 		sttModelId: settings.localAI.sttModelId,
 		ttsModelId: settings.localAI.ttsModelId,
 	};
@@ -904,6 +1220,7 @@ async function captureLocalAIDiagnostics(reason: string) {
 		profileId: settings.localAI.selectedProfileId,
 		models: {
 			text: settings.localAI.textModelId,
+			grammar: settings.localAI.grammarModelId,
 			stt: settings.localAI.sttModelId,
 			tts: settings.localAI.ttsModelId,
 		},
@@ -917,6 +1234,7 @@ async function captureLocalAIDiagnostics(reason: string) {
 			venvReady: isManagedVenvReady(),
 			packagesReady: hasRequiredLocalAIPackages(),
 			textModelCached: hasManagedModelCache(settings.localAI.textModelId),
+			grammarModelCached: hasManagedModelCache(settings.localAI.grammarModelId),
 			sttModelCached: hasManagedModelCache(settings.localAI.sttModelId),
 			ttsModelCached: hasManagedModelCache(settings.localAI.ttsModelId),
 		},
@@ -925,6 +1243,11 @@ async function captureLocalAIDiagnostics(reason: string) {
 				pid: textSidecar.proc?.pid ?? null,
 				healthy: await isSidecarHealthy(MLX_PORT),
 				modelId: textSidecar.modelId,
+			},
+			grammar: {
+				pid: grammarSidecar.proc?.pid ?? null,
+				healthy: await isSidecarHealthy(GRAMMAR_PORT),
+				modelId: grammarSidecar.modelId,
 			},
 			stt: {
 				pid: sttSidecar.proc?.pid ?? null,
@@ -949,6 +1272,7 @@ async function captureLocalAIDiagnostics(reason: string) {
 			`venvReady=${diagnostics.artifacts.venvReady}`,
 			`packagesReady=${diagnostics.artifacts.packagesReady}`,
 			`textHealthy=${diagnostics.sidecars.text.healthy}`,
+			`grammarHealthy=${diagnostics.sidecars.grammar.healthy}`,
 			`sttHealthy=${diagnostics.sidecars.stt.healthy}`,
 			`ttsHealthy=${diagnostics.sidecars.tts.healthy}`,
 		].join(" "),
@@ -1178,6 +1502,25 @@ async function preloadTextModel(modelId: string) {
 	markInstallStepComplete("text_model");
 }
 
+async function preloadGrammarModel(modelId: string) {
+	if (isInstallStepComplete("grammar_model") && hasManagedModelCache(modelId)) {
+		appendLog("install.log", `Grammar model cache already present for ${modelId}; skipping preload`);
+		return;
+	}
+
+	setRuntimeStatus({ currentPhase: "Downloading grammar model", progressPct: 60 });
+	await runCommand(
+		[
+			getVenvPythonPath(),
+			"-c",
+			`from mlx_lm import load; load(${JSON.stringify(modelId)}); print("ready")`,
+		],
+		"install.log",
+	);
+	appendLog("install.log", `Grammar model ready: ${modelId}`);
+	markInstallStepComplete("grammar_model");
+}
+
 async function preloadSttModel(modelId: string, provider: LocalAIModelProvider) {
 	if (isInstallStepComplete("stt_model") && hasManagedModelCache(modelId)) {
 		appendLog("install.log", `STT model cache already present for ${modelId}; skipping preload`);
@@ -1239,16 +1582,32 @@ async function isSidecarHealthy(port: number) {
 	}
 }
 
-const textSidecar: SidecarState = { proc: null, modelId: null, logs: [] };
-const sttSidecar: SidecarState = { proc: null, modelId: null, logs: [] };
-const ttsSidecar: SidecarState = { proc: null, modelId: null, logs: [] };
+const textSidecar: SidecarState = { proc: null, modelId: null, logs: [], idleTimer: null };
+const grammarSidecar: SidecarState = { proc: null, modelId: null, logs: [], idleTimer: null };
+const sttSidecar: SidecarState = { proc: null, modelId: null, logs: [], idleTimer: null };
+const ttsSidecar: SidecarState = { proc: null, modelId: null, logs: [], idleTimer: null };
+
+function clearSidecarIdleTimer(sidecar: SidecarState) {
+	if (!sidecar.idleTimer) return;
+	clearTimeout(sidecar.idleTimer);
+	sidecar.idleTimer = null;
+}
 
 function stopSidecar(sidecar: SidecarState) {
+	clearSidecarIdleTimer(sidecar);
 	if (sidecar.proc) {
 		sidecar.proc.kill();
 		sidecar.proc = null;
 	}
 	sidecar.modelId = null;
+}
+
+function scheduleSidecarIdleShutdown(sidecar: SidecarState, idleMs: number, label: string) {
+	clearSidecarIdleTimer(sidecar);
+	sidecar.idleTimer = setTimeout(() => {
+		appendHealthLog(`Stopping idle ${label}`);
+		stopSidecar(sidecar);
+	}, idleMs);
 }
 
 async function startProcessSidecar(
@@ -1257,6 +1616,7 @@ async function startProcessSidecar(
 	port: number,
 	modelId: string,
 	logName: string,
+	idleMs: number,
 	env: Record<string, string> = {},
 ) {
 	if (sidecar.proc) {
@@ -1278,6 +1638,7 @@ async function startProcessSidecar(
 	while (Date.now() - startedAt < 180_000) {
 		if (await isSidecarHealthy(port)) {
 			appendHealthLog(`${logName} healthy for ${modelId} on port ${port}`);
+			scheduleSidecarIdleShutdown(sidecar, idleMs, logName);
 			return;
 		}
 		await Bun.sleep(800);
@@ -1304,6 +1665,7 @@ async function ensureTextServerReady(modelId: string) {
 
 	if (textSidecar.proc && textSidecar.modelId === modelId && await isSidecarHealthy(MLX_PORT)) {
 		appendHealthLog(`Text server already healthy for ${modelId}`);
+		scheduleSidecarIdleShutdown(textSidecar, TEXT_SIDECAR_IDLE_MS, "text-server.log");
 		return;
 	}
 
@@ -1325,6 +1687,40 @@ async function ensureTextServerReady(modelId: string) {
 		MLX_PORT,
 		modelId,
 		"text-server.log",
+		TEXT_SIDECAR_IDLE_MS,
+	);
+}
+
+async function ensureGrammarServerReady(modelId: string) {
+	if (!canStartLocalAISidecars()) {
+		throw new Error("Enable Local AI in Settings first.");
+	}
+
+	if (grammarSidecar.proc && grammarSidecar.modelId === modelId && await isSidecarHealthy(GRAMMAR_PORT)) {
+		appendHealthLog(`Grammar server already healthy for ${modelId}`);
+		scheduleSidecarIdleShutdown(grammarSidecar, GRAMMAR_SIDECAR_IDLE_MS, "grammar-server.log");
+		return;
+	}
+
+	await startProcessSidecar(
+		grammarSidecar,
+		[
+			getVenvPythonPath(),
+			"-m",
+			"mlx_lm.server",
+			"--model",
+			modelId,
+			"--host",
+			"127.0.0.1",
+			"--port",
+			String(GRAMMAR_PORT),
+			"--max-tokens",
+			"512",
+		],
+		GRAMMAR_PORT,
+		modelId,
+		"grammar-server.log",
+		GRAMMAR_SIDECAR_IDLE_MS,
 	);
 }
 
@@ -1335,6 +1731,7 @@ async function ensureSttServerReady(modelId: string) {
 
 	if (sttSidecar.proc && sttSidecar.modelId === modelId && await isSidecarHealthy(STT_PORT)) {
 		appendHealthLog(`STT server already healthy for ${modelId}`);
+		scheduleSidecarIdleShutdown(sttSidecar, STT_SIDECAR_IDLE_MS, "stt-server.log");
 		return;
 	}
 
@@ -1349,6 +1746,7 @@ async function ensureSttServerReady(modelId: string) {
 		STT_PORT,
 		modelId,
 		"stt-server.log",
+		STT_SIDECAR_IDLE_MS,
 		provider === "mlx-whisper"
 			? { WHISPER_MODEL: modelId, WHISPER_PORT: String(STT_PORT) }
 			: { STT_MODEL: modelId, STT_PORT: String(STT_PORT) },
@@ -1362,6 +1760,7 @@ async function ensureTtsServerReady(modelId: string) {
 
 	if (ttsSidecar.proc && ttsSidecar.modelId === modelId && await isSidecarHealthy(TTS_PORT)) {
 		appendHealthLog(`TTS server already healthy for ${modelId}`);
+		scheduleSidecarIdleShutdown(ttsSidecar, TTS_SIDECAR_IDLE_MS, "tts-server.log");
 		return;
 	}
 
@@ -1373,6 +1772,7 @@ async function ensureTtsServerReady(modelId: string) {
 		TTS_PORT,
 		modelId,
 		"tts-server.log",
+		TTS_SIDECAR_IDLE_MS,
 		{
 			TTS_MODEL: modelId,
 			TTS_PORT: String(TTS_PORT),
@@ -1398,6 +1798,7 @@ async function ensureLocalAIRuntimeReady() {
 async function verifyLocalAIRuntime() {
 	if (isInstallStepComplete("verify")
 		&& await isSidecarHealthy(MLX_PORT)
+		&& await isSidecarHealthy(GRAMMAR_PORT)
 		&& await isSidecarHealthy(STT_PORT)
 		&& await isSidecarHealthy(TTS_PORT)) {
 		appendHealthLog("Runtime verification skipped because all sidecars are already healthy");
@@ -1407,11 +1808,26 @@ async function verifyLocalAIRuntime() {
 
 	setRuntimeStatus({ currentPhase: "Verifying local AI", progressPct: 92 });
 	await ensureTextServerReady(settings.localAI.textModelId);
+	await ensureGrammarServerReady(settings.localAI.grammarModelId);
 	await ensureSttServerReady(settings.localAI.sttModelId);
 	await ensureTtsServerReady(settings.localAI.ttsModelId);
-	appendHealthLog("Runtime verification succeeded for text, STT, and TTS sidecars");
+	appendHealthLog("Runtime verification succeeded for text, grammar, STT, and TTS sidecars");
 	markInstallStepComplete("verify");
 	await captureLocalAIDiagnostics("verify-success");
+}
+
+function refreshKeepWarmState(reason: string) {
+	appendHealthLog(`Refreshing sidecar residency: ${reason}`);
+	const canKeepResident = settings.localAI.enabled
+		&& settings.provider === "local"
+		&& runtimeStatus.installState === "ready";
+
+	if (canKeepResident) return;
+
+	stopSidecar(textSidecar);
+	stopSidecar(grammarSidecar);
+	stopSidecar(sttSidecar);
+	stopSidecar(ttsSidecar);
 }
 
 let installJob: Promise<void> | null = null;
@@ -1420,6 +1836,7 @@ function applyProfileToSettings(profileId: LocalAIProfileId) {
 	const profile = getProfile(currentCatalog, profileId);
 	settings.localAI.selectedProfileId = profile.id;
 	settings.localAI.textModelId = profile.textModelId;
+	settings.localAI.grammarModelId = profile.grammarModelId;
 	settings.localAI.sttModelId = profile.sttModelId;
 	settings.localAI.ttsModelId = profile.ttsModelId;
 	settings.localAI.catalogVersion = currentCatalog.version;
@@ -1460,6 +1877,7 @@ async function performLocalAIInstall(profileId: LocalAIProfileId, repair: boolea
 
 	const sttProvider = getLocalAIModelProvider(settings.localAI.sttModelId, "stt");
 	await preloadTextModel(settings.localAI.textModelId);
+	await preloadGrammarModel(settings.localAI.grammarModelId);
 	await preloadSttModel(settings.localAI.sttModelId, sttProvider);
 	await preloadTtsModel(settings.localAI.ttsModelId);
 	await verifyLocalAIRuntime();
@@ -1474,6 +1892,7 @@ async function performLocalAIInstall(profileId: LocalAIProfileId, repair: boolea
 		catalogVersion: currentCatalog.version,
 		installPlan: null,
 	});
+	refreshKeepWarmState("install-complete");
 }
 
 function beginLocalAIInstall(profileId: LocalAIProfileId, repair = false): LocalAIRequestResult {
@@ -1516,6 +1935,7 @@ function cancelLocalAIInstall() {
 		progressPct: null,
 		lastError: "Local AI install cancelled. Retry to resume or remove Local AI to clear partial files.",
 	});
+	refreshKeepWarmState("install-cancelled");
 	void captureLocalAIDiagnostics("install-cancelled");
 	return { success: true };
 }
@@ -1528,6 +1948,7 @@ function removeLocalAI() {
 	}
 	installJob = null;
 	stopSidecar(textSidecar);
+	stopSidecar(grammarSidecar);
 	stopSidecar(sttSidecar);
 	stopSidecar(ttsSidecar);
 	appendLog("install.log", "Removing Local AI files and resetting runtime state");
@@ -1592,9 +2013,35 @@ async function callLocalAI(systemPrompt: string, userMessage: string) {
 	return data.choices?.[0]?.message?.content ?? "";
 }
 
+async function callLocalAIGrammar(systemPrompt: string, userMessage: string) {
+	await ensureLocalAIRuntimeReady();
+	await ensureGrammarServerReady(settings.localAI.grammarModelId);
+	const response = await fetch(`http://127.0.0.1:${GRAMMAR_PORT}/v1/chat/completions`, {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({
+			messages: [
+				{ role: "system", content: systemPrompt },
+				{ role: "user", content: userMessage },
+			],
+			max_tokens: 512,
+			temperature: 0.1,
+		}),
+	});
+	const data = await response.json();
+	return data.choices?.[0]?.message?.content ?? "";
+}
+
 async function callAI(systemPrompt: string, userMessage: string): Promise<string> {
 	if (settings.provider === "local") {
 		return callLocalAI(systemPrompt, userMessage);
+	}
+	return callOpenRouter(systemPrompt, userMessage);
+}
+
+async function callAIGrammar(systemPrompt: string, userMessage: string): Promise<string> {
+	if (settings.provider === "local") {
+		return callLocalAIGrammar(systemPrompt, userMessage);
 	}
 	return callOpenRouter(systemPrompt, userMessage);
 }
@@ -1616,6 +2063,42 @@ function extensionForAudioMimeType(audioMimeType?: string): string {
 		default:
 			return "webm";
 	}
+}
+
+function isManagedSpeechAudioPath(audioPath: string) {
+	const resolvedPath = resolve(audioPath);
+	const tempRoot = resolve(tmpdir());
+	const parentDir = basename(dirname(resolvedPath));
+	return resolvedPath.startsWith(`${tempRoot}${sep}`) && parentDir.startsWith("buddywriter_tts_");
+}
+
+function releaseSpeechAudio(audioPath: string) {
+	if (!audioPath || !isManagedSpeechAudioPath(audioPath)) {
+		return { success: false };
+	}
+
+	rmSync(dirname(audioPath), { recursive: true, force: true });
+	return { success: true };
+}
+
+function cleanupStaleSpeechAudio(maxAgeMs = TTS_AUDIO_RETENTION_MS) {
+	try {
+		for (const entry of readdirSync(tmpdir())) {
+			if (!entry.startsWith("buddywriter_tts_")) continue;
+			const dirPath = join(tmpdir(), entry);
+			const stats = statSync(dirPath);
+			if (!stats.isDirectory()) continue;
+			if (Date.now() - stats.mtimeMs < maxAgeMs) continue;
+			rmSync(dirPath, { recursive: true, force: true });
+		}
+	} catch {}
+}
+
+function scheduleSpeechAudioCleanup(audioPath: string) {
+	if (!isManagedSpeechAudioPath(audioPath)) return;
+	setTimeout(() => {
+		releaseSpeechAudio(audioPath);
+	}, TTS_AUDIO_RETENTION_MS);
 }
 
 async function transcribeAudio(audioPath: string, language?: string, audioMimeType?: string): Promise<string> {
@@ -1653,6 +2136,7 @@ async function transcribeAudio(audioPath: string, language?: string, audioMimeTy
 async function speakText(text: string) {
 	await ensureLocalAIRuntimeReady();
 	await ensureTtsServerReady(settings.localAI.ttsModelId);
+	cleanupStaleSpeechAudio();
 	const entry = getModelEntry(currentCatalog, settings.localAI.ttsModelId);
 	const response = await fetch(`http://127.0.0.1:${TTS_PORT}/speak`, {
 		method: "POST",
@@ -1668,7 +2152,9 @@ async function speakText(text: string) {
 		const error = await response.json() as { error?: string };
 		throw new Error(error.error ?? "Speech generation failed.");
 	}
-	return response.json() as Promise<{ audioPath: string }>;
+	const result = await response.json() as { audioPath: string };
+	scheduleSpeechAudioCleanup(result.audioPath);
+	return result;
 }
 
 function escapeMarkdownHtml(text: string) {
@@ -1700,6 +2186,30 @@ type WriterRPC = {
 			saveSettings: {
 				params: Settings;
 				response: SaveSettingsResult;
+			};
+			getWorkspaceState: {
+				params: {};
+				response: WorkspaceStateResponse;
+			};
+			setWorkspacePath: {
+				params: { path: string };
+				response: WorkspaceStateResponse;
+			};
+			openDocument: {
+				params: { relativePath: string };
+				response: { relativePath: string; name: string; content: string };
+			};
+			saveDocument: {
+				params: { relativePath: string; content: string };
+				response: { success: boolean; savedAt: string };
+			};
+			createDocument: {
+				params: { parentRelativePath?: string; name?: string };
+				response: WorkspaceStateResponse;
+			};
+			createFolder: {
+				params: { parentRelativePath?: string; name?: string };
+				response: WorkspaceStateResponse;
 			};
 			getLocalAICatalog: {
 				params: {};
@@ -1737,6 +2247,10 @@ type WriterRPC = {
 				params: { text: string };
 				response: { accepted: boolean; audioPath?: string };
 			};
+			releaseSpeechAudio: {
+				params: { audioPath: string };
+				response: { success: boolean };
+			};
 		};
 		messages: {};
 	}>;
@@ -1747,6 +2261,10 @@ type WriterRPC = {
 			fixGrammar: {};
 			toggleAIChat: {};
 			toggleMarkdown: {};
+			newDocument: {};
+			newFolder: {};
+			saveDocument: {};
+			changeWorkspace: {};
 		};
 	}>;
 };
@@ -1760,7 +2278,7 @@ const writerRPC = BrowserView.defineRPC<WriterRPC>({
 				return { result };
 			},
 			grammarFix: async ({ text }: { text: string }) => {
-				const result = await callAI(
+				const result = await callAIGrammar(
 					"You are a grammar and style editor. Fix grammar, spelling, and punctuation errors in the following text. Return ONLY the corrected text, nothing else. Preserve the original meaning and tone.",
 					text,
 				);
@@ -1772,6 +2290,7 @@ const writerRPC = BrowserView.defineRPC<WriterRPC>({
 			getSettings: async () => {
 				syncOpenRouterKeyFromSecureStorage();
 				settings.localAI = normalizeLocalAISettings(settings.localAI);
+				settings.workspacePath = normalizeWorkspaceRootPath(settings.workspacePath);
 				return settings;
 			},
 			saveSettings: (newSettings: Settings) => {
@@ -1780,7 +2299,9 @@ const writerRPC = BrowserView.defineRPC<WriterRPC>({
 					...newSettings,
 					localAI: normalizeLocalAISettings(newSettings.localAI),
 				};
+				settings.workspacePath = normalizeWorkspaceRootPath(settings.workspacePath);
 				const secureStoreResult = saveOpenRouterKeyToSecureStorage(settings.openrouterKey);
+				ensureWorkspaceStructure(settings.workspacePath);
 				saveSettingsToDisk(settings);
 
 				if (!secureStoreResult.ok) {
@@ -1791,7 +2312,18 @@ const writerRPC = BrowserView.defineRPC<WriterRPC>({
 				}
 
 				syncOpenRouterKeyFromSecureStorage();
+				refreshKeepWarmState("settings-saved");
 				return { success: true };
+			},
+			getWorkspaceState: () => getWorkspaceState(),
+			setWorkspacePath: ({ path }: { path: string }) => setWorkspacePath(path),
+			openDocument: ({ relativePath }: { relativePath: string }) => openWorkspaceDocument(relativePath),
+			saveDocument: ({ relativePath, content }: { relativePath: string; content: string }) => saveWorkspaceDocument(relativePath, content),
+			createDocument: ({ parentRelativePath, name }: { parentRelativePath?: string; name?: string }) => {
+				return createWorkspaceDocument(parentRelativePath, name);
+			},
+			createFolder: ({ parentRelativePath, name }: { parentRelativePath?: string; name?: string }) => {
+				return createWorkspaceFolder(parentRelativePath, name);
 			},
 			getLocalAICatalog: () => {
 				return {
@@ -1815,6 +2347,7 @@ const writerRPC = BrowserView.defineRPC<WriterRPC>({
 				if (settings.localAI.enabled && runtimeStatus.installState === "ready") {
 					beginLocalAIInstall(profileId);
 				}
+				refreshKeepWarmState("profile-changed");
 				return { success: true };
 			},
 			transcribeAudio: async ({ audioPath, audioMimeType, language }: { audioPath: string; audioMimeType?: string; language?: string }) => {
@@ -1825,6 +2358,7 @@ const writerRPC = BrowserView.defineRPC<WriterRPC>({
 				const result = await speakText(text);
 				return { accepted: true, audioPath: result.audioPath };
 			},
+			releaseSpeechAudio: ({ audioPath }: { audioPath: string }) => releaseSpeechAudio(audioPath),
 		},
 		messages: {},
 	},
@@ -1859,6 +2393,32 @@ ApplicationMenu.setApplicationMenu([
 			{ role: "hideOthers" },
 			{ role: "separator" },
 			{ role: "quit" },
+		],
+	},
+	{
+		label: "File",
+		submenu: [
+			{
+				label: "New Note",
+				action: "new-document",
+				accelerator: "CommandOrControl+N",
+			},
+			{
+				label: "New Folder",
+				action: "new-folder",
+				accelerator: "CommandOrControl+Shift+N",
+			},
+			{ role: "separator" },
+			{
+				label: "Save",
+				action: "save-document",
+				accelerator: "CommandOrControl+S",
+			},
+			{
+				label: "Set Workspace Folder",
+				action: "change-workspace",
+				accelerator: "CommandOrControl+Shift+O",
+			},
 		],
 	},
 	{
@@ -1907,6 +2467,18 @@ ApplicationMenu.setApplicationMenu([
 
 ApplicationMenu.on("application-menu-clicked", (event) => {
 	switch (event.data.action) {
+		case "new-document":
+			win.webview.rpc?.send.newDocument({});
+			break;
+		case "new-folder":
+			win.webview.rpc?.send.newFolder({});
+			break;
+		case "save-document":
+			win.webview.rpc?.send.saveDocument({});
+			break;
+		case "change-workspace":
+			win.webview.rpc?.send.changeWorkspace({});
+			break;
 		case "zen-mode":
 			win.webview.rpc?.send.toggleZenMode({});
 			break;
@@ -1924,6 +2496,7 @@ ApplicationMenu.on("application-menu-clicked", (event) => {
 
 function cleanupLocalAI() {
 	stopSidecar(textSidecar);
+	stopSidecar(grammarSidecar);
 	stopSidecar(sttSidecar);
 	stopSidecar(ttsSidecar);
 }
@@ -1934,4 +2507,6 @@ process.on("SIGINT", () => {
 	process.exit();
 });
 
+cleanupStaleSpeechAudio();
 console.log("BuddyWriter started!");
+refreshKeepWarmState("app-start");

@@ -1,5 +1,5 @@
 {
-  "version": "2026-03-08.2",
+  "version": "2026-03-08.3",
   "generatedAt": "2026-03-08T00:00:00.000Z",
   "defaultProfileId": "starter",
   "profiles": [
@@ -7,20 +7,32 @@
       "id": "starter",
       "label": "Starter",
       "textModelId": "mlx-community/Qwen3.5-4B-4bit",
+      "grammarModelId": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
       "sttModelId": "mlx-community/whisper-large-v3-turbo",
       "ttsModelId": "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit",
-      "approxBundleGB": 6.2
+      "approxBundleGB": 7.1
     },
     {
       "id": "quality",
       "label": "Better Quality",
       "textModelId": "mlx-community/Qwen3.5-9B-4bit",
+      "grammarModelId": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
       "sttModelId": "mlx-community/whisper-large-v3-turbo",
       "ttsModelId": "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit",
-      "approxBundleGB": 10.4
+      "approxBundleGB": 11.3
     }
   ],
   "models": [
+    {
+      "id": "mlx-community/Qwen2.5-1.5B-Instruct-4bit",
+      "kind": "text",
+      "label": "Qwen 2.5 1.5B",
+      "provider": "mlx-lm",
+      "quantization": "4-bit",
+      "approxDownloadGB": 0.9,
+      "recommendedFor": "starter",
+      "hidden": true
+    },
     {
       "id": "mlx-community/Qwen3.5-4B-4bit",
       "kind": "text",

@@ -43,6 +43,7 @@ type LocalAIProfile = {
 	id: LocalAIProfileId;
 	label: string;
 	textModelId: string;
+	grammarModelId: string;
 	sttModelId: string;
 	ttsModelId: string;
 	approxBundleGB: number;
@@ -61,6 +62,7 @@ type LocalAISettings = {
 	installState: LocalAIInstallState;
 	selectedProfileId: LocalAIProfileId;
 	textModelId: string;
+	grammarModelId: string;
 	sttModelId: string;
 	ttsModelId: string;
 	catalogVersion: string | null;
@@ -73,8 +75,28 @@ type Settings = {
 	provider: "openrouter" | "local";
 	openrouterKey: string;
 	openrouterModel: string;
+	workspacePath: string;
 	localAI: LocalAISettings;
 	hotkeys: HotkeyMap;
+};
+
+type WorkspaceTreeEntry = {
+	kind: "file" | "directory";
+	name: string;
+	relativePath: string;
+	children?: WorkspaceTreeEntry[];
+};
+
+type WorkspaceDocument = {
+	relativePath: string;
+	name: string;
+	content: string;
+};
+
+type WorkspaceState = {
+	workspacePath: string;
+	tree: WorkspaceTreeEntry[];
+	activeDocument: WorkspaceDocument | null;
 };
 
 type LocalAIStatus = {
@@ -89,6 +111,7 @@ type LocalAIStatus = {
 	catalogVersion: string | null;
 	installBundleVersion: string | null;
 	textModelId: string;
+	grammarModelId: string;
 	sttModelId: string;
 	ttsModelId: string;
 };
@@ -115,6 +138,115 @@ const hotkeyLabels: Record<keyof HotkeyMap, string> = {
 	code: "Inline Code",
 };
 
+async function saveActiveDocument() {
+	if (!activeDocument) return;
+	if (saveInFlight) {
+		await saveInFlight;
+		if (!activeDocument || activeDocument.content === getCurrentEditorText()) {
+			return;
+		}
+	}
+
+	const relativePath = activeDocument.relativePath;
+	const content = getCurrentEditorText();
+	updateSaveStatus("saving");
+
+	saveInFlight = (async () => {
+		const result = await electrobun.rpc!.request.saveDocument({ relativePath, content });
+		if (activeDocument?.relativePath === relativePath && result.success) {
+			activeDocument.content = content;
+			updateSaveStatus("saved", "Saved");
+		}
+	})().finally(() => {
+		saveInFlight = null;
+	});
+
+	await saveInFlight;
+}
+
+function scheduleAutosave() {
+	if (!activeDocument || isApplyingEditorContent) return;
+	updateSaveStatus("unsaved");
+
+	if (autosaveTimer) clearTimeout(autosaveTimer);
+	autosaveTimer = setTimeout(() => {
+		autosaveTimer = null;
+		void saveActiveDocument();
+	}, 450);
+}
+
+async function flushAutosave(force = false) {
+	if (autosaveTimer) {
+		clearTimeout(autosaveTimer);
+		autosaveTimer = null;
+		await saveActiveDocument();
+		return;
+	}
+
+	if (force && activeDocument && activeDocument.content !== getCurrentEditorText()) {
+		await saveActiveDocument();
+		return;
+	}
+
+	if (saveInFlight) {
+		await saveInFlight;
+	}
+}
+
+async function openDocument(relativePath: string) {
+	await flushAutosave();
+	const document = await electrobun.rpc!.request.openDocument({ relativePath });
+	await setActiveDocument(document);
+}
+
+async function refreshWorkspace() {
+	const state = await electrobun.rpc!.request.getWorkspaceState({});
+	await applyWorkspaceState(state);
+}
+
+async function updateWorkspacePath(path: string) {
+	try {
+		await flushAutosave(true);
+		const state = await electrobun.rpc!.request.setWorkspacePath({ path });
+		await applyWorkspaceState(state);
+		updateSaveStatus("saved", "Workspace ready");
+	} catch (error) {
+		console.error("Workspace change failed:", error);
+		showAIStatus("Unable to use that workspace folder.");
+		setTimeout(() => hideAIStatus(), 4000);
+	}
+}
+
+async function handleCreateDocument() {
+	const suggestedName = window.prompt("New note name", "Untitled");
+	if (suggestedName === null) return;
+	await flushAutosave();
+	const state = await electrobun.rpc!.request.createDocument({
+		parentRelativePath: getParentRelativePath(activeDocument?.relativePath),
+		name: suggestedName,
+	});
+	await applyWorkspaceState(state);
+	editor.focus();
+}
+
+async function handleCreateFolder() {
+	const suggestedName = window.prompt("New folder name", "New Folder");
+	if (suggestedName === null) return;
+	await flushAutosave();
+	const state = await electrobun.rpc!.request.createFolder({
+		parentRelativePath: getParentRelativePath(activeDocument?.relativePath),
+		name: suggestedName,
+	});
+	await applyWorkspaceState(state);
+}
+
+async function promptForWorkspacePath() {
+	const nextPath = window.prompt("Workspace folder", currentWorkspacePath || currentSettings?.workspacePath || "");
+	if (!nextPath) return;
+	await flushAutosave();
+	await updateWorkspacePath(nextPath);
+}
+
 type WriterRPC = {
 	bun: {
 		requests: {
@@ -137,6 +269,30 @@ type WriterRPC = {
 			saveSettings: {
 				params: Settings;
 				response: { success: boolean; error?: string };
+			};
+			getWorkspaceState: {
+				params: {};
+				response: WorkspaceState;
+			};
+			setWorkspacePath: {
+				params: { path: string };
+				response: WorkspaceState;
+			};
+			openDocument: {
+				params: { relativePath: string };
+				response: WorkspaceDocument;
+			};
+			saveDocument: {
+				params: { relativePath: string; content: string };
+				response: { success: boolean; savedAt: string };
+			};
+			createDocument: {
+				params: { parentRelativePath?: string; name?: string };
+				response: WorkspaceState;
+			};
+			createFolder: {
+				params: { parentRelativePath?: string; name?: string };
+				response: WorkspaceState;
 			};
 			getLocalAICatalog: {
 				params: {};
@@ -174,6 +330,10 @@ type WriterRPC = {
 				params: { text: string };
 				response: { accepted: boolean; audioPath?: string };
 			};
+			releaseSpeechAudio: {
+				params: { audioPath: string };
+				response: { success: boolean };
+			};
 		};
 		messages: {};
 	};
@@ -184,6 +344,10 @@ type WriterRPC = {
 			fixGrammar: {};
 			toggleAIChat: {};
 			toggleMarkdown: {};
+			newDocument: {};
+			newFolder: {};
+			saveDocument: {};
+			changeWorkspace: {};
 		};
 	};
 };
@@ -197,6 +361,10 @@ const rpc = Electroview.defineRPC<WriterRPC>({
 			fixGrammar: () => handleGrammarFix(),
 			toggleAIChat: () => toggleChat(),
 			toggleMarkdown: () => toggleMarkdownMode(),
+			newDocument: () => void handleCreateDocument(),
+			newFolder: () => void handleCreateFolder(),
+			saveDocument: () => void flushAutosave(true),
+			changeWorkspace: () => void promptForWorkspacePath(),
 		},
 	},
 });
@@ -218,6 +386,8 @@ const grammarOverlay = document.getElementById("grammar-overlay")!;
 const settingsBtn = document.getElementById("settings-btn")!;
 const settingsPanel = document.getElementById("settings-panel")!;
 const settingsClose = document.getElementById("settings-close")!;
+const workspacePathInput = document.getElementById("workspace-path-input") as HTMLInputElement;
+const workspacePathApply = document.getElementById("workspace-path-apply") as HTMLButtonElement;
 const openrouterSettings = document.getElementById("openrouter-settings")!;
 const localSettings = document.getElementById("local-settings")!;
 const openrouterKey = document.getElementById("openrouter-key") as HTMLInputElement;
@@ -253,6 +423,14 @@ const localAISttModel = document.getElementById("local-ai-stt-model") as HTMLSel
 const localAITtsModel = document.getElementById("local-ai-tts-model") as HTMLSelectElement;
 const localAIRepair = document.getElementById("local-ai-repair") as HTMLButtonElement;
 const localAIRemove = document.getElementById("local-ai-remove") as HTMLButtonElement;
+const workspaceName = document.getElementById("workspace-name")!;
+const workspacePath = document.getElementById("workspace-path")!;
+const workspaceTree = document.getElementById("workspace-tree")!;
+const newNoteBtn = document.getElementById("new-note-btn") as HTMLButtonElement;
+const newFolderBtn = document.getElementById("new-folder-btn") as HTMLButtonElement;
+const documentTitle = document.getElementById("document-title")!;
+const documentMeta = document.getElementById("document-meta")!;
+const saveStatus = document.getElementById("save-status")!;
 const micBtn = document.getElementById("mic-btn") as HTMLButtonElement;
 const micStatus = document.getElementById("mic-status")!;
 const micLottie = document.getElementById("mic-lottie") as HTMLDivElement;
@@ -263,6 +441,12 @@ let selectedRange: Range | null = null;
 let isZen = false;
 let isMarkdownMode = false;
 let editorRawText = "";
+let currentWorkspacePath = "";
+let currentWorkspaceTree: WorkspaceTreeEntry[] = [];
+let activeDocument: WorkspaceDocument | null = null;
+let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+let saveInFlight: Promise<void> | null = null;
+let isApplyingEditorContent = false;
 let currentSettings: Settings | null = null;
 let currentCatalog: LocalAICatalog | null = null;
 let localAIStatus: LocalAIStatus | null = null;
@@ -281,6 +465,7 @@ let recordingProcessor: ScriptProcessorNode | null = null;
 let recordingSilence: GainNode | null = null;
 let recordedChunks: Float32Array[] = [];
 let recordedSampleRate = 44100;
+let currentTtsAudioPath: string | null = null;
 
 const micAnimation = lottie.loadAnimation({
 	container: micLottie,
@@ -319,8 +504,123 @@ function getModelLabel(modelId: string) {
 	return getModelEntry(modelId)?.label ?? modelId;
 }
 
+function getCurrentEditorText() {
+	return isMarkdownMode ? editorRawText : editor.innerText;
+}
+
+function getPathLeaf(path: string) {
+	const parts = path.split(/[\\/]/).filter(Boolean);
+	return parts[parts.length - 1] ?? path;
+}
+
+function getParentRelativePath(path?: string | null) {
+	if (!path) return "";
+	const parts = path.split("/").filter(Boolean);
+	parts.pop();
+	return parts.join("/");
+}
+
+function updateSaveStatus(state: "saved" | "saving" | "unsaved", detail?: string) {
+	saveStatus.classList.remove("saved", "saving", "unsaved");
+	saveStatus.classList.add(state);
+	saveStatus.textContent =
+		state === "saved" ? (detail ?? "Saved") :
+		state === "saving" ? (detail ?? "Saving...") :
+		(detail ?? "Unsaved");
+}
+
+async function applyEditorContent(text: string) {
+	isApplyingEditorContent = true;
+	try {
+		editorRawText = text;
+
+		if (isMarkdownMode) {
+			const { html } = await electrobun.rpc!.request.renderMarkdown({ text });
+			editor.innerHTML = html;
+			editor.contentEditable = "false";
+			editor.classList.add("markdown-preview");
+		} else {
+			editor.innerText = text;
+			editor.contentEditable = "true";
+			editor.classList.remove("markdown-preview");
+		}
+
+		updateWordCount();
+	} finally {
+		isApplyingEditorContent = false;
+	}
+}
+
+function renderWorkspaceTreeEntries(entries: WorkspaceTreeEntry[], container: HTMLElement) {
+	for (const entry of entries) {
+		if (entry.kind === "directory") {
+			const group = document.createElement("div");
+			group.className = "workspace-tree__group";
+
+			const label = document.createElement("div");
+			label.className = "workspace-tree__directory";
+			label.innerHTML = `<span class="workspace-tree__icon">DIR</span><span>${entry.name}</span>`;
+			group.appendChild(label);
+
+			const children = document.createElement("div");
+			children.className = "workspace-tree__children";
+			renderWorkspaceTreeEntries(entry.children ?? [], children);
+			group.appendChild(children);
+			container.appendChild(group);
+			continue;
+		}
+
+		const button = document.createElement("button");
+		button.type = "button";
+		button.className = "workspace-tree__file";
+		if (entry.relativePath === activeDocument?.relativePath) {
+			button.classList.add("active");
+		}
+		button.innerHTML = `<span class="workspace-tree__icon">MD</span><span>${entry.name.replace(/\.md$/i, "")}</span>`;
+		button.addEventListener("click", () => {
+			void openDocument(entry.relativePath);
+		});
+		container.appendChild(button);
+	}
+}
+
+function renderWorkspaceTree() {
+	workspaceTree.innerHTML = "";
+
+	if (currentWorkspaceTree.length === 0) {
+		const empty = document.createElement("div");
+		empty.className = "workspace-tree__empty";
+		empty.textContent = "No notes yet. Create one from the sidebar.";
+		workspaceTree.appendChild(empty);
+		return;
+	}
+
+	renderWorkspaceTreeEntries(currentWorkspaceTree, workspaceTree);
+}
+
+async function setActiveDocument(document: WorkspaceDocument | null) {
+	activeDocument = document;
+	documentTitle.textContent = document ? document.name.replace(/\.md$/i, "") : "No document";
+	documentMeta.textContent = document?.relativePath ?? currentWorkspacePath;
+	await applyEditorContent(document?.content ?? "");
+	updateSaveStatus("saved");
+	renderWorkspaceTree();
+}
+
+async function applyWorkspaceState(state: WorkspaceState) {
+	currentWorkspacePath = state.workspacePath;
+	currentWorkspaceTree = state.tree;
+	workspaceName.textContent = getPathLeaf(state.workspacePath);
+	workspacePath.textContent = state.workspacePath;
+	if (currentSettings) {
+		currentSettings.workspacePath = state.workspacePath;
+	}
+	workspacePathInput.value = state.workspacePath;
+	await setActiveDocument(state.activeDocument);
+}
+
 function updateWordCount() {
-	const text = editor.innerText.trim();
+	const text = getCurrentEditorText().trim();
 	const count = text ? text.split(/\s+/).length : 0;
 	wordCount.textContent = `${count} word${count !== 1 ? "s" : ""}`;
 }
@@ -338,13 +638,12 @@ function toggleZen() {
 	isZen = !isZen;
 	app.classList.toggle("zen", isZen);
 	if (isZen) {
-		editor.innerHTML = "";
 		editor.focus();
 	}
 }
 
 async function handleGrammarFix() {
-	const text = editor.innerText.trim();
+	const text = getCurrentEditorText().trim();
 	if (!text) return;
 
 	grammarOverlay.style.display = "flex";
@@ -353,8 +652,8 @@ async function handleGrammarFix() {
 	try {
 		const { result } = await electrobun.rpc!.request.grammarFix({ text });
 		if (result) {
-			editor.innerText = result;
-			updateWordCount();
+			await applyEditorContent(result);
+			scheduleAutosave();
 		}
 	} catch (error) {
 		console.error("Grammar fix failed:", error);
@@ -421,8 +720,13 @@ async function renderBubbleContent(bubble: HTMLElement) {
 async function speakAssistantText(text: string) {
 	showAIStatus("speaking...");
 	try {
+		if (currentTtsAudioPath) {
+			void electrobun.rpc!.request.releaseSpeechAudio({ audioPath: currentTtsAudioPath });
+			currentTtsAudioPath = null;
+		}
 		const result = await electrobun.rpc!.request.speakText({ text });
 		if (result.accepted && result.audioPath) {
+			currentTtsAudioPath = result.audioPath;
 			ttsAudio.src = `file://${result.audioPath}`;
 			await ttsAudio.play();
 		}
@@ -431,6 +735,14 @@ async function speakAssistantText(text: string) {
 	} finally {
 		hideAIStatus();
 	}
+}
+
+function releaseCurrentSpeechAudio() {
+	if (!currentTtsAudioPath) return;
+	void electrobun.rpc!.request.releaseSpeechAudio({ audioPath: currentTtsAudioPath });
+	currentTtsAudioPath = null;
+	ttsAudio.removeAttribute("src");
+	ttsAudio.load();
 }
 
 function buildAssistantActions(text: string, showApply: boolean) {
@@ -487,13 +799,13 @@ async function sendChatMessage() {
 	await addChatBubble("user", userMsg);
 
 	let instruction = userMsg;
-	let text = editor.innerText;
+	let text = getCurrentEditorText();
 
 	if (contextText) {
 		instruction = `The user has selected the following text from their document:\n\n"${contextText}"\n\nTheir request: ${userMsg}\n\nRespond with the rewritten/improved text. If they ask to add content, provide the addition. Be concise and direct.`;
 		text = contextText;
 	} else {
-		instruction = `The user is writing a document. Here is the full text:\n\n"${editor.innerText}"\n\nTheir request: ${userMsg}\n\nRespond helpfully and concisely.`;
+		instruction = `The user is writing a document. Here is the full text:\n\n"${getCurrentEditorText()}"\n\nTheir request: ${userMsg}\n\nRespond helpfully and concisely.`;
 	}
 
 	showAIStatus("thinking...");
@@ -520,20 +832,10 @@ chatInput.addEventListener("keydown", (event) => {
 });
 
 async function toggleMarkdownMode() {
+	const sourceText = isMarkdownMode ? editorRawText : editor.innerText;
 	isMarkdownMode = !isMarkdownMode;
-
-	if (isMarkdownMode) {
-		editorRawText = editor.innerText;
-		const { html } = await electrobun.rpc!.request.renderMarkdown({ text: editorRawText });
-		editor.innerHTML = html;
-		editor.contentEditable = "false";
-		editor.classList.add("markdown-preview");
-	} else {
-		editor.innerText = editorRawText;
-		editor.contentEditable = "true";
-		editor.classList.remove("markdown-preview");
-		editor.focus();
-	}
+	await applyEditorContent(sourceText);
+	if (!isMarkdownMode) editor.focus();
 
 	const bubbles = chatMessages.querySelectorAll<HTMLElement>(".chat-msg.assistant");
 	for (const bubble of bubbles) {
@@ -557,6 +859,7 @@ function replaceSelection(newText: string) {
 	selectedRange = null;
 	chatContext.style.display = "none";
 	updateWordCount();
+	scheduleAutosave();
 }
 
 function setProviderUI(provider: Settings["provider"]) {
@@ -673,6 +976,7 @@ async function loadSettingsUI() {
 
 	openrouterKey.value = currentSettings.openrouterKey;
 	openrouterModel.value = currentSettings.openrouterModel;
+	workspacePathInput.value = currentWorkspacePath || currentSettings.workspacePath;
 	setProviderUI(currentSettings.provider);
 	loadHotkeysUI();
 	await refreshLocalAIStatus();
@@ -729,6 +1033,14 @@ settingsClose.addEventListener("click", () => {
 	void persistSettings();
 });
 
+newNoteBtn.addEventListener("click", () => {
+	void handleCreateDocument();
+});
+
+newFolderBtn.addEventListener("click", () => {
+	void handleCreateFolder();
+});
+
 providerToggles.forEach((button) => {
 	button.addEventListener("click", () => {
 		if (!currentSettings) return;
@@ -741,6 +1053,15 @@ providerToggles.forEach((button) => {
 
 openrouterKey.addEventListener("change", () => void persistSettings());
 openrouterModel.addEventListener("change", () => void persistSettings());
+workspacePathApply.addEventListener("click", () => {
+	void updateWorkspacePath(workspacePathInput.value);
+});
+workspacePathInput.addEventListener("keydown", (event) => {
+	if (event.key === "Enter") {
+		event.preventDefault();
+		void updateWorkspacePath(workspacePathInput.value);
+	}
+});
 
 function populateHotkeysList() {
 	const list = document.getElementById("hotkeys-list")!;
@@ -812,6 +1133,7 @@ async function persistSettings() {
 	if (!currentSettings) return;
 	currentSettings.openrouterKey = openrouterKey.value;
 	currentSettings.openrouterModel = openrouterModel.value;
+	currentSettings.workspacePath = currentWorkspacePath || currentSettings.workspacePath;
 	const result = await electrobun.rpc!.request.saveSettings(currentSettings);
 	if (!result.success && result.error) {
 		console.error(result.error);
@@ -926,6 +1248,7 @@ function wrapSelection(before: string, after: string) {
 	selection.removeAllRanges();
 	selection.addRange(nextRange);
 	updateWordCount();
+	scheduleAutosave();
 }
 
 document.addEventListener("keydown", (event) => {
@@ -951,24 +1274,26 @@ document.addEventListener("keydown", (event) => {
 	} else if (mod && !event.shiftKey && key === "x") {
 		const selection = window.getSelection();
 		if (selection && selection.toString() && inEditor) {
+				event.preventDefault();
+				void navigator.clipboard.writeText(selection.toString());
+				selection.deleteFromDocument();
+				updateWordCount();
+				scheduleAutosave();
+			}
+		} else if (mod && !event.shiftKey && key === "v" && inEditor) {
 			event.preventDefault();
-			void navigator.clipboard.writeText(selection.toString());
-			selection.deleteFromDocument();
-			updateWordCount();
-		}
-	} else if (mod && !event.shiftKey && key === "v" && inEditor) {
-		event.preventDefault();
 		void navigator.clipboard.readText().then((text) => {
 			const selection = window.getSelection();
 			if (!selection || !selection.rangeCount) return;
 			const range = selection.getRangeAt(0);
 			range.deleteContents();
 			range.insertNode(document.createTextNode(text));
-			range.collapse(false);
-			selection.removeAllRanges();
-			selection.addRange(range);
-			updateWordCount();
-		});
+				range.collapse(false);
+				selection.removeAllRanges();
+				selection.addRange(range);
+				updateWordCount();
+				scheduleAutosave();
+			});
 	} else if (mod && !event.shiftKey && key === "z" && inEditor) {
 		event.preventDefault();
 		document.execCommand("undo");
@@ -1088,6 +1413,7 @@ function insertTextAtCursor(text: string) {
 	selection.addRange(range);
 	lastCursorRange = range.cloneRange();
 	updateWordCount();
+	scheduleAutosave();
 }
 
 function encodeWav(chunks: Float32Array[], sampleRate: number) {
@@ -1127,8 +1453,23 @@ function encodeWav(chunks: Float32Array[], sampleRate: number) {
 	return buffer;
 }
 
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+	const bytes = new Uint8Array(buffer);
+	const chunkSize = 0x8000;
+	let binary = "";
+
+	for (let index = 0; index < bytes.length; index += chunkSize) {
+		const chunk = bytes.subarray(index, index + chunkSize);
+		binary += String.fromCharCode(...chunk);
+	}
+
+	return btoa(binary);
+}
+
 async function finishRecording() {
 	if (recordedChunks.length === 0) return;
+	const chunks = recordedChunks;
+	recordedChunks = [];
 
 	micBtn.classList.remove("recording");
 	micBtn.classList.add("transcribing");
@@ -1138,8 +1479,8 @@ async function finishRecording() {
 	syncMicAnimation();
 
 	try {
-		const wavBuffer = encodeWav(recordedChunks, recordedSampleRate);
-		const base64 = btoa(String.fromCharCode(...new Uint8Array(wavBuffer)));
+		const wavBuffer = encodeWav(chunks, recordedSampleRate);
+		const base64 = arrayBufferToBase64(wavBuffer);
 		const { text } = await electrobun.rpc!.request.transcribeAudio({
 			audioPath: `base64:${base64}`,
 		});
@@ -1159,6 +1500,7 @@ async function finishRecording() {
 		micStatus.textContent = "";
 		hideAIStatus();
 		syncMicAnimation();
+		recordedChunks = [];
 	}
 }
 
@@ -1259,6 +1601,13 @@ document.addEventListener("keydown", (event) => {
 	}
 }, true);
 
+window.addEventListener("blur", () => {
+	void flushAutosave(true);
+});
+
+ttsAudio.addEventListener("ended", releaseCurrentSpeechAudio);
+ttsAudio.addEventListener("error", releaseCurrentSpeechAudio);
+
 editor.addEventListener("mouseup", saveCursorPosition);
 editor.addEventListener("keyup", saveCursorPosition);
 editor.addEventListener("input", positionMicAtCursor);
@@ -1273,6 +1622,15 @@ editor.addEventListener("blur", () => {
 	}, 150);
 });
 
-editor.addEventListener("input", updateWordCount);
-updateWordCount();
-editor.focus();
+editor.addEventListener("input", () => {
+	updateWordCount();
+	scheduleAutosave();
+});
+
+void (async () => {
+	await Promise.all([
+		loadSettingsUI(),
+		refreshWorkspace(),
+	]);
+	editor.focus();
+})();
