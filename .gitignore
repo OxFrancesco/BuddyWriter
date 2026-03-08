@@ -3,6 +3,7 @@ sources
 
 BuddyWriterDesktop/node_modules/
 BuddyWriterDesktop/build/
+BuddyWriterDesktop/artifacts/
 
 BuddyWriterMobile/node_modules/
 BuddyWriterMobile/.expo/
