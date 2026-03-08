@@ -56,6 +56,7 @@ declare module "electrobun/bun" {
 			title?: string;
 			url?: string;
 			rpc?: RPCDefinition<T>;
+			preload?: string;
 			titleBarStyle?: "hidden" | "hiddenInset" | "default";
 			frame?: {
 				x?: number;

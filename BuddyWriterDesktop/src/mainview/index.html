@@ -4,6 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>BuddyWriter</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;1,6..72,300;1,6..72,400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="index.css" />
   </head>
   <body>
@@ -21,7 +24,7 @@
       <div id="settings-panel" class="settings-panel">
         <div class="settings-inner">
           <div class="settings-header">
-            <h2 class="settings-title">Settings</h2>
+            <h2 class="settings-title">Preferences</h2>
             <button id="settings-close" class="chat-close">&times;</button>
           </div>
 
@@ -191,7 +194,7 @@
           </div>
 
           <div class="editor-container">
-            <div id="editor" class="editor" contenteditable="true" spellcheck="false" data-placeholder="Start writing..."></div>
+            <div id="editor" class="editor" contenteditable="true" spellcheck="false" data-placeholder="Begin writing..."></div>
           </div>
         </main>
       </div>
@@ -226,7 +229,7 @@
       <!-- AI Chat Panel (hidden by default, slides from right) -->
       <div id="chat-panel" class="chat-panel">
         <div class="chat-header electrobun-webkit-app-region-drag">
-          <span class="chat-title">AI Assistant</span>
+          <span class="chat-title">Assistant</span>
           <button id="chat-close" class="chat-close">&times;</button>
         </div>
         <div id="chat-messages" class="chat-messages"></div>
@@ -245,7 +248,7 @@
       <!-- Grammar fix overlay indicator -->
       <div id="grammar-overlay" class="grammar-overlay" style="display: none;">
         <div class="grammar-spinner"></div>
-        <span>Fixing grammar...</span>
+        <span>Refining...</span>
       </div>
 
       <audio id="tts-audio" preload="none"></audio>

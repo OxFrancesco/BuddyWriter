@@ -2364,10 +2364,20 @@ const writerRPC = BrowserView.defineRPC<WriterRPC>({
 	},
 });
 
-const win = new BrowserWindow({
+const electrobunBridgeCompatPreload = `
+// Electrobun 1.15.1 on macOS can deliver invalid bytes through eventBridge.
+// Trusted BuddyWriter webviews also have internalBridge, which handles the same
+// lifecycle events without the malformed payload issue.
+if (window.__electrobunInternalBridge) {
+	window.__electrobunEventBridge = window.__electrobunInternalBridge;
+}
+`;
+
+const win = new BrowserWindow<WriterRPC>({
 	title: "BuddyWriter",
 	url: "views://mainview/index.html",
 	rpc: writerRPC,
+	preload: electrobunBridgeCompatPreload,
 	titleBarStyle: "hiddenInset",
 	frame: {
 		x: 200,
