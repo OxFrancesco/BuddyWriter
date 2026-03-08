@@ -1,0 +1,24 @@
+{
+	"compilerOptions": {
+		"target": "ESNext",
+		"lib": ["ESNext", "DOM", "DOM.Iterable"],
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"baseUrl": ".",
+		"paths": {
+			"electrobun": ["types/electrobun-shim.d.ts"],
+			"electrobun/bun": ["types/electrobun-shim.d.ts"],
+			"electrobun/view": ["types/electrobun-shim.d.ts"]
+		},
+		"strict": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true,
+		"resolveJsonModule": true,
+		"declaration": true,
+		"declarationMap": true,
+		"sourceMap": true
+	},
+	"include": ["src", "types/**/*.d.ts"],
+	"exclude": ["node_modules", "dist", "build", "../../package/dist"]
+}

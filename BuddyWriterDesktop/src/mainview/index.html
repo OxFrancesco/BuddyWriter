@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BuddyWriter</title>
+    <link rel="stylesheet" href="index.css" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <!-- Titlebar drag region (for hiddenInset titlebar) -->
+      <div class="titlebar" electrobun-drag-region>
+        <button id="settings-btn" class="settings-btn" title="Settings">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Settings Panel -->
+      <div id="settings-panel" class="settings-panel">
+        <div class="settings-inner">
+          <div class="settings-header">
+            <h2 class="settings-title">Settings</h2>
+            <button id="settings-close" class="chat-close">&times;</button>
+          </div>
+
+          <div class="settings-body">
+            <!-- Provider -->
+            <div class="settings-section">
+              <label class="settings-label">AI Provider</label>
+              <div class="settings-toggle-group">
+                <button class="settings-toggle active" data-provider="openrouter">OpenRouter</button>
+                <button class="settings-toggle" data-provider="mlx">Local MLX</button>
+              </div>
+            </div>
+
+            <!-- OpenRouter Settings -->
+            <div id="openrouter-settings" class="settings-section">
+              <label class="settings-label">OpenRouter API Key</label>
+              <input type="password" id="openrouter-key" class="settings-input" placeholder="sk-or-..." />
+              <label class="settings-label">Model</label>
+              <select id="openrouter-model" class="settings-select">
+                <option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
+                <option value="anthropic/claude-sonnet-4">Claude Sonnet 4</option>
+                <option value="openai/gpt-4.1-mini">GPT-4.1 Mini</option>
+                <option value="meta-llama/llama-4-scout">Llama 4 Scout</option>
+                <option value="qwen/qwen3-8b">Qwen3 8B</option>
+              </select>
+            </div>
+
+            <!-- MLX Settings -->
+            <div id="mlx-settings" class="settings-section" style="display: none;">
+              <label class="settings-label">MLX Model</label>
+              <select id="mlx-model" class="settings-select">
+                <option value="mlx-community/Qwen3-4B-4bit">Qwen3 4B (2.5 GB)</option>
+                <option value="mlx-community/gemma-3-4b-it-4bit">Gemma 3 4B (3 GB)</option>
+                <option value="mlx-community/Phi-4-mini-instruct-4bit">Phi-4 Mini (2.5 GB)</option>
+                <option value="mlx-community/Llama-3.2-3B-Instruct-4bit">Llama 3.2 3B (2 GB)</option>
+                <option value="mlx-community/Qwen3-8B-4bit">Qwen3 8B (5 GB)</option>
+                <option value="mlx-community/Meta-Llama-3.1-8B-Instruct-4bit">Llama 3.1 8B (5 GB)</option>
+              </select>
+              <label class="settings-label">Python Path</label>
+              <input type="text" id="mlx-python" class="settings-input" placeholder="/usr/bin/python3 or .venv/bin/python3" />
+              <div id="mlx-status" class="mlx-status">
+                <span id="mlx-status-dot" class="mlx-dot offline"></span>
+                <span id="mlx-status-text">Server not running</span>
+              </div>
+              <div class="mlx-actions">
+                <button id="mlx-start" class="settings-btn-action">Start Server</button>
+                <button id="mlx-stop" class="settings-btn-action danger" style="display: none;">Stop Server</button>
+              </div>
+              <p class="settings-hint">Requires <code>pip install mlx-lm</code>. Models download on first use (~2-5 GB).</p>
+            </div>
+
+            <!-- Whisper Voice -->
+            <div class="settings-section">
+              <label class="settings-label">Voice Input (Whisper)</label>
+              <select id="whisper-model" class="settings-select">
+                <option value="mlx-community/whisper-turbo">Whisper Turbo (809 MB)</option>
+                <option value="mlx-community/whisper-large-v3-mlx-4bit">Large v3 4-bit (best accuracy)</option>
+                <option value="mlx-community/whisper-small">Small (244 MB, fastest)</option>
+                <option value="mlx-community/whisper-base">Base (74 MB, lightest)</option>
+              </select>
+              <div id="whisper-status" class="mlx-status">
+                <span id="whisper-status-dot" class="mlx-dot offline"></span>
+                <span id="whisper-status-text">Server not running</span>
+              </div>
+              <div class="mlx-actions">
+                <button id="whisper-start" class="settings-btn-action">Start Server</button>
+                <button id="whisper-stop" class="settings-btn-action danger" style="display: none;">Stop Server</button>
+              </div>
+              <p class="settings-hint">Requires <code>pip install mlx-whisper</code> and <code>ffmpeg</code>. Models download on first use.</p>
+            </div>
+
+            <!-- Hotkeys -->
+            <div class="settings-section">
+              <label class="settings-label">Keyboard Shortcuts</label>
+              <div id="hotkeys-list" class="hotkeys-list"></div>
+              <p class="settings-hint">Click a shortcut to rebind it. Press your new key combination.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main writing area -->
+      <div class="editor-container">
+        <div id="editor" class="editor" contenteditable="true" spellcheck="false" data-placeholder="Start writing..."></div>
+      </div>
+
+      <!-- Voice Mic Bar -->
+      <div id="mic-bar" class="mic-bar">
+        <div class="mic-bar-inner">
+          <span class="mic-hint mic-hint-left" id="mic-hint">click or hold to record</span>
+          <button id="mic-btn" class="mic-btn" title="Voice input">
+            <pre class="mic-ascii">  ╭───╮
+  │ ◉ │
+  ╰─┬─╯
+    │
+  ╭─┴─╮
+  ╰───╯</pre>
+          </button>
+          <span class="mic-hint mic-hint-right" id="mic-status"></span>
+        </div>
+      </div>
+
+      <!-- Status bar at bottom -->
+      <div id="status-bar" class="status-bar">
+        <span id="word-count">0 words</span>
+        <span id="ai-status"></span>
+      </div>
+
+      <!-- AI Chat Panel (hidden by default, slides from right) -->
+      <div id="chat-panel" class="chat-panel">
+        <div class="chat-header">
+          <span class="chat-title">AI Assistant</span>
+          <button id="chat-close" class="chat-close">&times;</button>
+        </div>
+        <div id="chat-messages" class="chat-messages"></div>
+        <div class="chat-input-area">
+          <div id="chat-context" class="chat-context" style="display: none;">
+            <span class="chat-context-label">Selected text</span>
+            <button id="clear-context" class="clear-context">&times;</button>
+          </div>
+          <textarea id="chat-input" class="chat-input" placeholder="Ask AI to help with your writing..." rows="2"></textarea>
+          <button id="chat-send" class="chat-send">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2Z"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Grammar fix overlay indicator -->
+      <div id="grammar-overlay" class="grammar-overlay" style="display: none;">
+        <div class="grammar-spinner"></div>
+        <span>Fixing grammar...</span>
+      </div>
+    </div>
+    <script type="module" src="index.js"></script>
+  </body>
+</html>

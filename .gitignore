@@ -1,0 +1,13 @@
+sources
+.DS_Store
+
+BuddyWriterDesktop/node_modules/
+BuddyWriterDesktop/build/
+
+BuddyWriterMobile/node_modules/
+BuddyWriterMobile/.expo/
+BuddyWriterMobile/dist/
+BuddyWriterMobile/web-build/
+BuddyWriterMobile/expo-env.d.ts
+BuddyWriterMobile/android/
+BuddyWriterMobile/ios/
