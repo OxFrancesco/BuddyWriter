@@ -36,11 +36,12 @@
             </div>
 
             <!-- OpenRouter Settings -->
-            <div id="openrouter-settings" class="settings-section">
-              <label class="settings-label">OpenRouter API Key</label>
-              <input type="password" id="openrouter-key" class="settings-input" placeholder="sk-or-..." />
-              <label class="settings-label">Model</label>
-              <select id="openrouter-model" class="settings-select">
+	            <div id="openrouter-settings" class="settings-section">
+	              <label class="settings-label">OpenRouter API Key</label>
+	              <input type="password" id="openrouter-key" class="settings-input" placeholder="sk-or-..." />
+	              <p class="settings-hint">Kept in memory for the current session only. Use <code>OPENROUTER_API_KEY</code> to preload it at launch.</p>
+	              <label class="settings-label">Model</label>
+	              <select id="openrouter-model" class="settings-select">
                 <option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
                 <option value="anthropic/claude-sonnet-4">Claude Sonnet 4</option>
                 <option value="openai/gpt-4.1-mini">GPT-4.1 Mini</option>
@@ -53,12 +54,14 @@
             <div id="mlx-settings" class="settings-section" style="display: none;">
               <label class="settings-label">MLX Model</label>
               <select id="mlx-model" class="settings-select">
+                <option value="mlx-community/Qwen3-4B-Instruct-2507-4bit">Qwen3 4B Instruct 2507 (2.3 GB)</option>
                 <option value="mlx-community/Qwen3-4B-4bit">Qwen3 4B (2.5 GB)</option>
+                <option value="mlx-community/Qwen3-8B-4bit">Qwen3 8B (5 GB)</option>
+                <option value="mlx-community/Qwen3-14B-4bit">Qwen3 14B (8-9 GB)</option>
+                <option value="mlx-community/Llama-3.2-3B-Instruct-4bit">Llama 3.2 3B (2 GB)</option>
+                <option value="mlx-community/Meta-Llama-3.1-8B-Instruct-4bit">Llama 3.1 8B (5 GB)</option>
                 <option value="mlx-community/gemma-3-4b-it-4bit">Gemma 3 4B (3 GB)</option>
                 <option value="mlx-community/Phi-4-mini-instruct-4bit">Phi-4 Mini (2.5 GB)</option>
-                <option value="mlx-community/Llama-3.2-3B-Instruct-4bit">Llama 3.2 3B (2 GB)</option>
-                <option value="mlx-community/Qwen3-8B-4bit">Qwen3 8B (5 GB)</option>
-                <option value="mlx-community/Meta-Llama-3.1-8B-Instruct-4bit">Llama 3.1 8B (5 GB)</option>
               </select>
               <label class="settings-label">Python Path</label>
               <input type="text" id="mlx-python" class="settings-input" placeholder="/usr/bin/python3 or .venv/bin/python3" />
@@ -70,17 +73,18 @@
                 <button id="mlx-start" class="settings-btn-action">Start Server</button>
                 <button id="mlx-stop" class="settings-btn-action danger" style="display: none;">Stop Server</button>
               </div>
-              <p class="settings-hint">Requires <code>pip install mlx-lm</code>. Models download on first use (~2-5 GB).</p>
+              <p class="settings-hint">Starts automatically on first use. Requires Apple Silicon and <code>pip install -U mlx-lm</code>. Models download on first use.</p>
             </div>
 
-            <!-- Whisper Voice -->
+            <!-- Local Voice -->
             <div class="settings-section">
-              <label class="settings-label">Voice Input (Whisper)</label>
+              <label class="settings-label">Voice Input (Local STT)</label>
               <select id="whisper-model" class="settings-select">
+                <option value="mlx-community/whisper-large-v3-turbo">Whisper Large v3 Turbo (fastest best-quality)</option>
                 <option value="mlx-community/whisper-turbo">Whisper Turbo (809 MB)</option>
-                <option value="mlx-community/whisper-large-v3-mlx-4bit">Large v3 4-bit (best accuracy)</option>
-                <option value="mlx-community/whisper-small">Small (244 MB, fastest)</option>
-                <option value="mlx-community/whisper-base">Base (74 MB, lightest)</option>
+                <option value="mlx-community/whisper-large-v3-mlx-4bit">Whisper Large v3 4-bit (best accuracy)</option>
+                <option value="mlx-community/whisper-small-mlx">Whisper Small MLX (244 MB)</option>
+                <option value="mlx-community/whisper-base-mlx">Whisper Base MLX (74 MB)</option>
               </select>
               <div id="whisper-status" class="mlx-status">
                 <span id="whisper-status-dot" class="mlx-dot offline"></span>
@@ -90,7 +94,7 @@
                 <button id="whisper-start" class="settings-btn-action">Start Server</button>
                 <button id="whisper-stop" class="settings-btn-action danger" style="display: none;">Stop Server</button>
               </div>
-              <p class="settings-hint">Requires <code>pip install mlx-whisper</code> and <code>ffmpeg</code>. Models download on first use.</p>
+              <p class="settings-hint">Starts automatically on first dictation. Requires <code>pip install -U mlx-whisper</code> and <code>ffmpeg</code>. Models download on first use.</p>
             </div>
 
             <!-- Hotkeys -->

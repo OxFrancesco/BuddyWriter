@@ -9,6 +9,11 @@ import { join } from "path";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
 import { type Subprocess, spawn } from "bun";
 
+type StartResult = {
+	ok: boolean;
+	error?: string;
+};
+
 // ─── Settings persistence ───
 const settingsDir = Utils.paths.userData;
 if (!existsSync(settingsDir)) mkdirSync(settingsDir, { recursive: true });
@@ -41,13 +46,15 @@ type Settings = {
 	hotkeys: HotkeyMap;
 };
 
+type PersistedSettings = Omit<Settings, "openrouterKey">;
+
 const defaultSettings: Settings = {
 	provider: "openrouter",
 	openrouterKey: Bun.env.OPENROUTER_API_KEY ?? "",
 	openrouterModel: "google/gemini-2.5-flash",
-	mlxModel: "mlx-community/Qwen3-4B-4bit",
+	mlxModel: "mlx-community/Qwen3-4B-Instruct-2507-4bit",
 	mlxPythonPath: "python3",
-	whisperModel: "mlx-community/whisper-turbo",
+	whisperModel: "mlx-community/whisper-large-v3-turbo",
 	hotkeys: {
 		zenMode: { mod: true, shift: true, key: "f" },
 		fixGrammar: { mod: true, shift: false, key: "g" },
@@ -63,32 +70,114 @@ const defaultSettings: Settings = {
 function loadSettings(): Settings {
 	try {
 		if (existsSync(settingsPath)) {
-			return { ...defaultSettings, ...JSON.parse(readFileSync(settingsPath, "utf-8")) };
+			const persisted = JSON.parse(readFileSync(settingsPath, "utf-8")) as Partial<PersistedSettings>;
+			return { ...defaultSettings, ...persisted, openrouterKey: defaultSettings.openrouterKey };
 		}
 	} catch {}
 	return { ...defaultSettings };
 }
 
 function saveSettings(s: Settings) {
-	writeFileSync(settingsPath, JSON.stringify(s, null, 2));
+	const persisted: PersistedSettings = {
+		provider: s.provider,
+		openrouterModel: s.openrouterModel,
+		mlxModel: s.mlxModel,
+		mlxPythonPath: s.mlxPythonPath,
+		whisperModel: s.whisperModel,
+		hotkeys: s.hotkeys,
+	};
+
+	writeFileSync(settingsPath, JSON.stringify(persisted, null, 2));
 }
 
 let settings = loadSettings();
 
 // ─── MLX Sidecar ───
 const MLX_PORT = 8079;
+const MAX_SIDECAR_LOG_LINES = 60;
 let mlxProc: Subprocess | null = null;
+let mlxProcModel: string | null = null;
+const mlxLogs: string[] = [];
 
-async function startMLX(model: string, pythonPath: string): Promise<boolean> {
+function normalizePythonPath(pythonPath: string) {
+	return pythonPath.trim() || "python3";
+}
+
+function pushLogLines(buffer: string[], text: string) {
+	const lines = text
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean);
+
+	if (lines.length === 0) return;
+
+	buffer.push(...lines);
+	if (buffer.length > MAX_SIDECAR_LOG_LINES) {
+		buffer.splice(0, buffer.length - MAX_SIDECAR_LOG_LINES);
+	}
+}
+
+async function captureProcessStream(
+	stream: ReadableStream<Uint8Array> | null | undefined,
+	buffer: string[],
+) {
+	if (!stream) return;
+
+	const reader = stream.getReader();
+	const decoder = new TextDecoder();
+	let pending = "";
+
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+
+			pending += decoder.decode(value, { stream: true });
+			const chunks = pending.split(/\r?\n/);
+			pending = chunks.pop() ?? "";
+
+			for (const chunk of chunks) {
+				pushLogLines(buffer, chunk);
+			}
+		}
+
+		pending += decoder.decode();
+		pushLogLines(buffer, pending);
+	} catch {}
+}
+
+function trackProcessLogs(proc: Subprocess, buffer: string[]) {
+	buffer.length = 0;
+	void captureProcessStream(proc.stdout as ReadableStream<Uint8Array> | null, buffer);
+	void captureProcessStream(proc.stderr as ReadableStream<Uint8Array> | null, buffer);
+}
+
+function recentLogs(buffer: string[], fallback: string) {
+	if (buffer.length === 0) return fallback;
+	return buffer.slice(-6).join(" | ");
+}
+
+async function isSidecarHealthy(port: number) {
+	try {
+		const res = await fetch(`http://127.0.0.1:${port}/health`);
+		return res.ok;
+	} catch {
+		return false;
+	}
+}
+
+async function startMLX(model: string, pythonPath: string): Promise<StartResult> {
 	if (mlxProc) {
 		mlxProc.kill();
 		mlxProc = null;
+		mlxProcModel = null;
 	}
 
 	try {
+		const resolvedPythonPath = normalizePythonPath(pythonPath);
 		mlxProc = spawn({
 			cmd: [
-				pythonPath, "-m", "mlx_lm.server",
+				resolvedPythonPath, "-m", "mlx_lm.server",
 				"--model", model,
 				"--port", String(MLX_PORT),
 				"--host", "127.0.0.1",
@@ -97,21 +186,28 @@ async function startMLX(model: string, pythonPath: string): Promise<boolean> {
 			stdout: "pipe",
 			stderr: "pipe",
 		});
+		mlxProcModel = model;
+		trackProcessLogs(mlxProc, mlxLogs);
 
 		// Wait for health
 		const start = Date.now();
 		while (Date.now() - start < 120_000) {
-			try {
-				const res = await fetch(`http://127.0.0.1:${MLX_PORT}/health`);
-				if (res.ok) return true;
-			} catch {}
+			if (await isSidecarHealthy(MLX_PORT)) return { ok: true };
 			await Bun.sleep(800);
 		}
 		mlxProc.kill();
 		mlxProc = null;
-		return false;
+		mlxProcModel = null;
+		return {
+			ok: false,
+			error: `MLX server failed to start for ${model}. ${recentLogs(mlxLogs, "Check the python path and run `pip install -U mlx-lm`.")}`,
+		};
 	} catch {
-		return false;
+		mlxProcModel = null;
+		return {
+			ok: false,
+			error: `Unable to launch MLX server. ${recentLogs(mlxLogs, "Check the python path and run `pip install -U mlx-lm`.")}`,
+		};
 	}
 }
 
@@ -120,23 +216,40 @@ function stopMLX() {
 		mlxProc.kill();
 		mlxProc = null;
 	}
+	mlxProcModel = null;
+}
+
+async function ensureMLXRunning(model: string, pythonPath: string): Promise<StartResult> {
+	if (mlxProc && mlxProcModel && mlxProcModel !== model) {
+		stopMLX();
+	}
+
+	if (await isSidecarHealthy(MLX_PORT)) {
+		return { ok: true };
+	}
+
+	return startMLX(model, pythonPath);
 }
 
 // ─── Whisper Sidecar ───
 const WHISPER_PORT = 8765;
 let whisperProc: Subprocess | null = null;
+let whisperProcModel: string | null = null;
+const whisperLogs: string[] = [];
 
-async function startWhisper(model: string, pythonPath: string): Promise<boolean> {
+async function startWhisper(model: string, pythonPath: string): Promise<StartResult> {
 	if (whisperProc) {
 		whisperProc.kill();
 		whisperProc = null;
+		whisperProcModel = null;
 	}
 
 	const scriptPath = join(import.meta.dir, "whisper_server.py");
 
 	try {
+		const resolvedPythonPath = normalizePythonPath(pythonPath);
 		whisperProc = spawn({
-			cmd: [pythonPath, scriptPath],
+			cmd: [resolvedPythonPath, scriptPath],
 			env: {
 				...process.env,
 				WHISPER_MODEL: model,
@@ -145,20 +258,27 @@ async function startWhisper(model: string, pythonPath: string): Promise<boolean>
 			stdout: "pipe",
 			stderr: "pipe",
 		});
+		whisperProcModel = model;
+		trackProcessLogs(whisperProc, whisperLogs);
 
 		const start = Date.now();
 		while (Date.now() - start < 180_000) {
-			try {
-				const res = await fetch(`http://127.0.0.1:${WHISPER_PORT}/health`);
-				if (res.ok) return true;
-			} catch {}
+			if (await isSidecarHealthy(WHISPER_PORT)) return { ok: true };
 			await Bun.sleep(1000);
 		}
 		whisperProc.kill();
 		whisperProc = null;
-		return false;
+		whisperProcModel = null;
+		return {
+			ok: false,
+			error: `Voice server failed to start for ${model}. ${recentLogs(whisperLogs, "Check the python path and run `pip install -U mlx-whisper` plus `brew install ffmpeg`.")}`,
+		};
 	} catch {
-		return false;
+		whisperProcModel = null;
+		return {
+			ok: false,
+			error: `Unable to launch the local voice server. ${recentLogs(whisperLogs, "Check the python path and run `pip install -U mlx-whisper` plus `brew install ffmpeg`.")}`,
+		};
 	}
 }
 
@@ -167,6 +287,19 @@ function stopWhisper() {
 		whisperProc.kill();
 		whisperProc = null;
 	}
+	whisperProcModel = null;
+}
+
+async function ensureWhisperRunning(model: string, pythonPath: string): Promise<StartResult> {
+	if (whisperProc && whisperProcModel && whisperProcModel !== model) {
+		stopWhisper();
+	}
+
+	if (await isSidecarHealthy(WHISPER_PORT)) {
+		return { ok: true };
+	}
+
+	return startWhisper(model, pythonPath);
 }
 
 async function transcribeAudio(audioPath: string, language?: string): Promise<string> {
@@ -181,6 +314,11 @@ async function transcribeAudio(audioPath: string, language?: string): Promise<st
 	}
 
 	try {
+		const startResult = await ensureWhisperRunning(settings.whisperModel, settings.mlxPythonPath);
+		if (!startResult.ok) {
+			throw new Error(startResult.error ?? "Voice server is unavailable.");
+		}
+
 		const response = await fetch(`http://127.0.0.1:${WHISPER_PORT}/transcribe`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -202,13 +340,22 @@ async function transcribeAudio(audioPath: string, language?: string): Promise<st
 
 // ─── AI call router ───
 async function callAI(systemPrompt: string, userMessage: string): Promise<string> {
-	if (settings.provider === "mlx" && mlxProc) {
+	if (settings.provider === "mlx") {
+		const startResult = await ensureMLXRunning(settings.mlxModel, settings.mlxPythonPath);
+		if (!startResult.ok) {
+			throw new Error(startResult.error ?? "MLX server is unavailable.");
+		}
+
 		return callMLX(systemPrompt, userMessage);
 	}
 	return callOpenRouter(systemPrompt, userMessage);
 }
 
 async function callOpenRouter(systemPrompt: string, userMessage: string): Promise<string> {
+	if (!settings.openrouterKey.trim()) {
+		throw new Error("OpenRouter API key is missing. Set OPENROUTER_API_KEY or enter a key in Settings for this session.");
+	}
+
 	const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
 		method: "POST",
 		headers: {
@@ -242,6 +389,13 @@ async function callMLX(systemPrompt: string, userMessage: string): Promise<strin
 	});
 	const data = await response.json();
 	return data.choices?.[0]?.message?.content ?? "";
+}
+
+function escapeMarkdownHtml(text: string) {
+	return text
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;");
 }
 
 // ─── RPC ───
@@ -313,78 +467,70 @@ type WriterRPC = {
 const writerRPC = BrowserView.defineRPC<WriterRPC>({
 	maxRequestTime: 120000,
 	handlers: {
-			requests: {
-				aiComplete: async ({ text, instruction }: { text: string; instruction: string }) => {
-					const result = await callAI(instruction, text);
-					return { result };
-				},
-				grammarFix: async ({ text }: { text: string }) => {
-					const result = await callAI(
-						"You are a grammar and style editor. Fix grammar, spelling, and punctuation errors in the following text. Return ONLY the corrected text, nothing else. Preserve the original meaning and tone.",
-						text,
-					);
-					return { result };
+		requests: {
+			aiComplete: async ({ text, instruction }: { text: string; instruction: string }) => {
+				const result = await callAI(instruction, text);
+				return { result };
+			},
+			grammarFix: async ({ text }: { text: string }) => {
+				const result = await callAI(
+					"You are a grammar and style editor. Fix grammar, spelling, and punctuation errors in the following text. Return ONLY the corrected text, nothing else. Preserve the original meaning and tone.",
+					text,
+				);
+				return { result };
 				},
 				renderMarkdown: ({ text }: { text: string }) => {
-					return { html: Bun.markdown.html(text) };
+					return { html: Bun.markdown.html(escapeMarkdownHtml(text)) };
 				},
-				getSettings: () => {
-					return settings;
-				},
-				saveSettings: (newSettings: Settings) => {
-					settings = { ...settings, ...newSettings };
+			getSettings: () => {
+				return settings;
+			},
+			saveSettings: (newSettings: Settings) => {
+				settings = { ...settings, ...newSettings };
+				settings.mlxPythonPath = normalizePythonPath(settings.mlxPythonPath);
+				saveSettings(settings);
+				return { success: true };
+			},
+			startMLXServer: async ({ model, pythonPath }: { model: string; pythonPath: string }) => {
+				const result = await startMLX(model, pythonPath);
+				if (result.ok) {
+					settings.mlxModel = model;
+					settings.mlxPythonPath = normalizePythonPath(pythonPath);
 					saveSettings(settings);
 					return { success: true };
-				},
-				startMLXServer: async ({ model, pythonPath }: { model: string; pythonPath: string }) => {
-					const ok = await startMLX(model, pythonPath);
-					if (ok) {
-						settings.mlxModel = model;
-						settings.mlxPythonPath = pythonPath;
-						saveSettings(settings);
-					return { success: true };
 				}
-				return { success: false, error: "Server failed to start. Check python path and mlx-lm install." };
+
+				return { success: false, error: result.error };
 			},
 			stopMLXServer: () => {
 				stopMLX();
 				return { success: true };
 			},
 			getMLXStatus: async () => {
-				if (!mlxProc) return { running: false };
-				try {
-					const res = await fetch(`http://127.0.0.1:${MLX_PORT}/health`);
-					return { running: res.ok };
-				} catch {
-					return { running: false };
-				}
+				return { running: await isSidecarHealthy(MLX_PORT) };
 			},
-				startWhisperServer: async ({ model, pythonPath }: { model: string; pythonPath: string }) => {
-					const ok = await startWhisper(model, pythonPath);
-					if (ok) {
-						settings.whisperModel = model;
-						saveSettings(settings);
-						return { success: true };
+			startWhisperServer: async ({ model, pythonPath }: { model: string; pythonPath: string }) => {
+				const result = await startWhisper(model, pythonPath);
+				if (result.ok) {
+					settings.whisperModel = model;
+					settings.mlxPythonPath = normalizePythonPath(pythonPath);
+					saveSettings(settings);
+					return { success: true };
 				}
-				return { success: false, error: "Whisper server failed to start. Check python path and mlx-whisper install." };
+
+				return { success: false, error: result.error };
 			},
 			stopWhisperServer: () => {
 				stopWhisper();
 				return { success: true };
 			},
 			getWhisperStatus: async () => {
-				if (!whisperProc) return { running: false };
-				try {
-					const res = await fetch(`http://127.0.0.1:${WHISPER_PORT}/health`);
-					return { running: res.ok };
-				} catch {
-					return { running: false };
-				}
+				return { running: await isSidecarHealthy(WHISPER_PORT) };
 			},
-				transcribeAudio: async ({ audioPath, language }: { audioPath: string; language?: string }) => {
-					const text = await transcribeAudio(audioPath, language);
-					return { text };
-				},
+			transcribeAudio: async ({ audioPath, language }: { audioPath: string; language?: string }) => {
+				const text = await transcribeAudio(audioPath, language);
+				return { text };
+			},
 		},
 		messages: {},
 	},

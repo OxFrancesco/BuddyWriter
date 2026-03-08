@@ -168,10 +168,25 @@ const whisperStop = document.getElementById("whisper-stop") as HTMLButtonElement
 
 // ─── State ───
 let selectedText = "";
+let selectedRange: Range | null = null;
 let isZen = false;
 let isMarkdownMode = false;
 let editorRawText = "";
 let currentSettings: Settings | null = null;
+
+function ensureSelectValue(select: HTMLSelectElement, value: string, labelPrefix: string) {
+	if (!value) return;
+
+	const hasOption = Array.from(select.options).some((option) => option.value === value);
+	if (!hasOption) {
+		const option = document.createElement("option");
+		option.value = value;
+		option.textContent = `${labelPrefix}: ${value}`;
+		select.prepend(option);
+	}
+
+	select.value = value;
+}
 
 // ─── Word Count ───
 function updateWordCount() {
@@ -235,11 +250,13 @@ clearContext.addEventListener("click", () => {
 
 function captureSelection() {
 	const sel = window.getSelection();
-	if (sel && sel.toString().trim()) {
+	if (sel && sel.rangeCount > 0 && sel.toString().trim() && editor.contains(sel.anchorNode)) {
 		selectedText = sel.toString().trim();
+		selectedRange = sel.getRangeAt(0).cloneRange();
 		chatContext.style.display = "flex";
 	} else {
 		selectedText = "";
+		selectedRange = null;
 		chatContext.style.display = "none";
 	}
 }
@@ -361,12 +378,19 @@ async function toggleMarkdownMode() {
 }
 
 function replaceSelection(newText: string) {
-	if (!selectedText) return;
-	const html = editor.innerHTML;
-	const escapedSelection = selectedText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const regex = new RegExp(escapedSelection.replace(/\s+/g, "\\s*"), "i");
-	editor.innerHTML = html.replace(regex, newText);
+	if (!selectedRange) return;
+
+	const range = selectedRange.cloneRange();
+	range.deleteContents();
+	range.insertNode(document.createTextNode(newText));
+	range.collapse(false);
+
+	const selection = window.getSelection();
+	selection?.removeAllRanges();
+	selection?.addRange(range);
+
 	selectedText = "";
+	selectedRange = null;
 	chatContext.style.display = "none";
 	updateWordCount();
 }
@@ -401,10 +425,9 @@ async function loadSettingsUI() {
 
 	openrouterKey.value = s.openrouterKey;
 	openrouterModel.value = s.openrouterModel;
-	mlxModel.value = s.mlxModel;
-	mlxPython.value = s.mlxPythonPath;
-
-	whisperModel.value = s.whisperModel || "mlx-community/whisper-turbo";
+	ensureSelectValue(mlxModel, s.mlxModel, "Custom model");
+	mlxPython.value = s.mlxPythonPath || "python3";
+	ensureSelectValue(whisperModel, s.whisperModel || "mlx-community/whisper-large-v3-turbo", "Custom voice model");
 
 	setProviderUI(s.provider);
 	loadHotkeysUI();
@@ -443,7 +466,8 @@ function persistSettings() {
 	currentSettings.openrouterKey = openrouterKey.value;
 	currentSettings.openrouterModel = openrouterModel.value;
 	currentSettings.mlxModel = mlxModel.value;
-	currentSettings.mlxPythonPath = mlxPython.value;
+	currentSettings.mlxPythonPath = mlxPython.value.trim() || "python3";
+	mlxPython.value = currentSettings.mlxPythonPath;
 	currentSettings.whisperModel = whisperModel.value;
 	electrobun.rpc!.request.saveSettings(currentSettings);
 }
@@ -522,7 +546,7 @@ mlxStart.addEventListener("click", async () => {
 
 	const res = await electrobun.rpc!.request.startMLXServer({
 		model: mlxModel.value,
-		pythonPath: mlxPython.value,
+		pythonPath: mlxPython.value.trim() || "python3",
 	});
 
 	if (res.success) {
@@ -571,7 +595,7 @@ whisperStart.addEventListener("click", async () => {
 
 	const res = await electrobun.rpc!.request.startWhisperServer({
 		model: whisperModel.value,
-		pythonPath: mlxPython.value || "python3",
+		pythonPath: mlxPython.value.trim() || "python3",
 	});
 
 	if (res.success) {
