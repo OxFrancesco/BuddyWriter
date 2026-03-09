@@ -70,6 +70,10 @@ export type WriterBunRequestMap = {
 		params: { relativePath: string; targetParentRelativePath: string };
 		response: WorkspaceState;
 	};
+	deleteDocument: {
+		params: { relativePath: string };
+		response: WorkspaceState;
+	};
 	archiveDocument: {
 		params: { relativePath: string; archived: boolean };
 		response: WorkspaceState;

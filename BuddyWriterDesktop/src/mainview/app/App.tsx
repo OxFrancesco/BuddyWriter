@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { defaultHotkeys } from "../../shared/models/settings";
 import type { WorkspaceState } from "../../shared/models/workspace";
+import { normalizeDocumentTitle } from "../../shared/utils/note-metadata";
 import { ChatPanel, type ChatPanelMessage } from "../components/ChatPanel";
 import { DocumentHeader } from "../components/DocumentHeader";
 import { EditorSurface, type EditorSurfaceHandle } from "../components/EditorSurface";
@@ -8,6 +9,7 @@ import { MicButton } from "../components/MicButton";
 import { MicrophonePermissionModal } from "../components/MicrophonePermissionModal";
 import { SettingsPanel } from "../components/SettingsPanel";
 import { StatusBar } from "../components/StatusBar";
+import { ConfirmModal } from "../components/ConfirmModal";
 import { WorkspaceSidebar, type WorkspaceSidebarHandle } from "../components/WorkspaceSidebar";
 import { useAutosave } from "../hooks/useAutosave";
 import { useEventCallback } from "../hooks/useEventCallback";
@@ -27,7 +29,7 @@ function createChatMessageId(): string {
 	return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function AppShell(): React.ReactElement {
+export function AppShell(): React.ReactElement {
 	const editorRef = useRef<EditorSurfaceHandle | null>(null);
 	const workspaceSidebarRef = useRef<WorkspaceSidebarHandle | null>(null);
 	const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -62,6 +64,7 @@ function AppShell(): React.ReactElement {
 	const [selectedText, setSelectedText] = useState("");
 	const [wordCount, setWordCount] = useState(0);
 	const [zenMode, setZenMode] = useState(false);
+	const [deleteConfirmPath, setDeleteConfirmPath] = useState<string | null>(null);
 
 	const currentWorkspacePath = workspaceState?.workspacePath ?? currentSettings?.workspacePath ?? "";
 
@@ -154,6 +157,16 @@ function AppShell(): React.ReactElement {
 		await action;
 	});
 
+	const runWithNoteSettingsGuard = useEventCallback(async (task: () => Promise<void>) => {
+		const sidebar = workspaceSidebarRef.current;
+		if (!sidebar) {
+			await task();
+			return;
+		}
+
+		await sidebar.runWithNoteSettingsGuard(task);
+	});
+
 	const releaseCurrentSpeechAudio = useEventCallback(() => {
 		if (!currentSpeechAudioPathRef.current) return;
 		void rpcClient.releaseSpeechAudio({ audioPath: currentSpeechAudioPathRef.current });
@@ -187,15 +200,17 @@ function AppShell(): React.ReactElement {
 	});
 
 	const handleWorkspacePathApply = useEventCallback(async (path: string) => {
-		try {
-			await flushAutosave(true);
-			const state = await rpcClient.setWorkspacePath({ path });
-			applyWorkspaceState(state);
-			setSaveStatus("saved", "Workspace ready");
-		} catch (error) {
-			console.error("Workspace change failed:", error);
-			showTransientStatus("Unable to use that workspace folder.", 4000);
-		}
+		await runWithNoteSettingsGuard(async () => {
+			try {
+				await flushAutosave(true);
+				const state = await rpcClient.setWorkspacePath({ path });
+				applyWorkspaceState(state);
+				setSaveStatus("saved", "Workspace ready");
+			} catch (error) {
+				console.error("Workspace change failed:", error);
+				showTransientStatus("Unable to use that workspace folder.", 4000);
+			}
+		});
 	});
 
 	const promptForWorkspacePath = useEventCallback(async () => {
@@ -204,29 +219,67 @@ function AppShell(): React.ReactElement {
 		await handleWorkspacePathApply(nextPath);
 	});
 
-	const handleCreateDocument = useEventCallback(async () => {
-		const suggestedName = window.prompt("New note name", "Untitled");
-		if (suggestedName === null) return;
-		await flushAutosave();
+	const createDocumentFromCurrentContext = useEventCallback(async (params?: {
+		name?: string;
+		successLabel?: string;
+	}) => {
+		const seedContent = !activeDocument && editorText ? editorText : null;
 		const state = await rpcClient.createDocument({
-			parentRelativePath: getParentRelativePath(activeDocument?.relativePath),
-			name: suggestedName,
+			parentRelativePath: getParentRelativePath(activeDocument?.relativePath) || undefined,
+			name: params?.name,
 		});
-		applyWorkspaceState(state);
+
+		let nextState = state;
+		if (seedContent && state.activeDocument) {
+			const saveResult = await rpcClient.saveDocument({
+				relativePath: state.activeDocument.relativePath,
+				content: seedContent,
+			});
+			if (!saveResult.success) {
+				throw new Error("Unable to save document.");
+			}
+
+			nextState = {
+				...state,
+				activeDocument: {
+					...state.activeDocument,
+					content: seedContent,
+				},
+			};
+		}
+
+		applyWorkspaceState(nextState);
+		setSaveStatus("saved", params?.successLabel ?? "Saved");
 		window.setTimeout(() => {
 			editorRef.current?.focus();
 		}, 0);
 	});
 
+	const handleCreateDocument = useEventCallback(async () => {
+		await runWithNoteSettingsGuard(async () => {
+			try {
+				await flushAutosave();
+				await runDocumentAction(async () => {
+					await createDocumentFromCurrentContext({ successLabel: "New note" });
+				});
+			} catch (error) {
+				console.error("Create note failed:", error);
+				showTransientStatus("Unable to create note.", 4000);
+			}
+		});
+	});
+
 	const handleCreateFolder = useEventCallback(async () => {
 		const suggestedName = window.prompt("New folder name", "New Folder");
 		if (suggestedName === null) return;
-		await flushAutosave();
-		const state = await rpcClient.createFolder({
-			parentRelativePath: getParentRelativePath(activeDocument?.relativePath),
-			name: suggestedName,
+		await runWithNoteSettingsGuard(async () => {
+			await flushAutosave();
+			const state = await rpcClient.createFolder({
+				parentRelativePath: getParentRelativePath(activeDocument?.relativePath),
+				name: suggestedName,
+			});
+			applyWorkspaceState(state);
 		});
-		applyWorkspaceState(state);
 	});
 
 	const handleSaveDocumentMetadata = useEventCallback(async (params: {
@@ -235,9 +288,14 @@ function AppShell(): React.ReactElement {
 		labels: string[];
 		targetParentRelativePath: string;
 	}, successLabel = "Note updated") => {
+		const normalizedTitle = normalizeDocumentTitle(params.title);
+		if (!normalizedTitle) {
+			showTransientStatus("Note title cannot be blank.", 4000);
+			return;
+		}
+
 		await runDocumentAction(async () => {
 			if (!activeDocument) return;
-			const normalizedTitle = params.title.trim();
 			const normalizedLabels = parseLabelsInput(params.labels.join(", "));
 			const normalizedTargetParentRelativePath = params.targetParentRelativePath.trim();
 			const currentLabels = [...activeDocument.labels].sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
@@ -264,27 +322,69 @@ function AppShell(): React.ReactElement {
 	});
 
 	const handleRenameDocument = useEventCallback(async (nextTitle: string) => {
-		if (!activeDocument) return;
+		const normalizedTitle = normalizeDocumentTitle(nextTitle);
+		if (!normalizedTitle) {
+			showTransientStatus("Note title cannot be blank.", 4000);
+			return;
+		}
 
-		await handleSaveDocumentMetadata({
-			relativePath: activeDocument.relativePath,
-			title: nextTitle,
-			labels: activeDocument.labels,
-			targetParentRelativePath: activeDocument.parentRelativePath,
-		}, "Renamed");
+		await runWithNoteSettingsGuard(async () => {
+			if (!activeDocument) {
+				try {
+					await runDocumentAction(async () => {
+						await createDocumentFromCurrentContext({
+							name: normalizedTitle,
+							successLabel: "Created",
+						});
+					});
+				} catch (error) {
+					console.error("Create note from title failed:", error);
+					showTransientStatus("Unable to create note.", 4000);
+				}
+				return;
+			}
+
+			await handleSaveDocumentMetadata({
+				relativePath: activeDocument.relativePath,
+				title: nextTitle,
+				labels: activeDocument.labels,
+				targetParentRelativePath: activeDocument.parentRelativePath,
+			}, "Renamed");
+		});
 	});
 
 	const handleArchiveDocument = useEventCallback(async (params: { relativePath: string; archived: boolean }) => {
-		await runDocumentAction(async () => {
-			if (!activeDocument) return;
+		await runWithNoteSettingsGuard(async () => {
+			await runDocumentAction(async () => {
+				if (!activeDocument) return;
 
-			await flushAutosave(true);
-			const state = await rpcClient.archiveDocument({
-				relativePath: params.relativePath,
-				archived: params.archived,
+				await flushAutosave(true);
+				const state = await rpcClient.archiveDocument({
+					relativePath: params.relativePath,
+					archived: params.archived,
+				});
+				applyWorkspaceState(state);
+				setSaveStatus("saved", params.archived ? "Archived" : "Restored");
 			});
+		});
+	});
+
+	const handleDeleteDocument = useEventCallback(async (relativePath: string) => {
+		await runWithNoteSettingsGuard(async () => {
+			setDeleteConfirmPath(relativePath);
+		});
+	});
+
+	const confirmDeleteDocument = useEventCallback(async () => {
+		const relativePath = deleteConfirmPath;
+		setDeleteConfirmPath(null);
+		if (!relativePath) return;
+
+		await runDocumentAction(async () => {
+			await flushAutosave(true);
+			const state = await rpcClient.deleteDocument({ relativePath });
 			applyWorkspaceState(state);
-			setSaveStatus("saved", params.archived ? "Archived" : "Restored");
+			setSaveStatus("saved", "Deleted");
 		});
 	});
 
@@ -580,6 +680,7 @@ function AppShell(): React.ReactElement {
 					onArchiveDocument={handleArchiveDocument}
 					onCreateDocument={() => void handleCreateDocument()}
 					onCreateFolder={() => void handleCreateFolder()}
+					onDeleteDocument={handleDeleteDocument}
 					onOpenDocument={openDocument}
 					onSaveDocumentMetadata={handleSaveDocumentMetadata}
 					tree={workspaceState?.tree ?? []}
@@ -620,6 +721,17 @@ function AppShell(): React.ReactElement {
 				onClose={voiceRecorder.dismissPermissionDialog}
 				onOpenSystemSettings={() => void voiceRecorder.openMicrophoneSystemSettings()}
 				onRetry={() => void voiceRecorder.retryMicrophoneAccess()}
+			/>
+
+			<ConfirmModal
+				open={deleteConfirmPath !== null}
+				title="Delete this note?"
+				description="This note will be moved to trash and permanently deleted after 30 days."
+				confirmLabel="Delete"
+				cancelLabel="Cancel"
+				danger
+				onConfirm={() => void confirmDeleteDocument()}
+				onCancel={() => setDeleteConfirmPath(null)}
 			/>
 
 			<StatusBar aiStatus={aiStatus} wordCount={wordCount} />

@@ -6,6 +6,8 @@ export function shouldIgnoreWorkspaceWatcherPath(filename: string): boolean {
 	const normalizedName = filename.replaceAll("\\", "/");
 	return normalizedName === ".buddywriter"
 		|| normalizedName.startsWith(".buddywriter/")
+		|| normalizedName === ".trash"
+		|| normalizedName.startsWith(".trash/")
 		|| normalizedName.includes(".tmp-");
 }
 

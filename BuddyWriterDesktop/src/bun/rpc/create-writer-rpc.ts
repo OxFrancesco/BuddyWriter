@@ -119,6 +119,10 @@ export function createWriterRPC(options: {
 					muteWorkspaceWatcher();
 					return workspaceService.moveWorkspaceDocument(relativePath, targetParentRelativePath);
 				},
+				deleteDocument: ({ relativePath }: WriterBunRequestMap["deleteDocument"]["params"]) => {
+					muteWorkspaceWatcher();
+					return workspaceService.deleteWorkspaceDocument(relativePath);
+				},
 				archiveDocument: ({ relativePath, archived }: WriterBunRequestMap["archiveDocument"]["params"]) => {
 					muteWorkspaceWatcher();
 					return workspaceService.archiveWorkspaceDocument(relativePath, archived);

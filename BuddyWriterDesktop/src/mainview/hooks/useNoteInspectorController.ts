@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef } from "react";
 import type { WorkspaceDocument } from "../../shared/models/workspace";
+import { normalizeDocumentTitle } from "../../shared/utils/note-metadata";
 import { parseLabelsInput } from "../utils/workspace";
 import { useEventCallback } from "./useEventCallback";
 
@@ -11,6 +12,7 @@ export type NoteInspectorDraft = {
 
 export type DiscardIntent =
 	| { kind: "closeInspector" }
+	| { kind: "continueAction" }
 	| { kind: "selectDocument"; relativePath: string; reopenInspector: boolean }
 	| { kind: "openInspectorForDocument"; relativePath: string };
 
@@ -67,6 +69,7 @@ type UseNoteInspectorControllerResult = {
 	inspectorDocumentRelativePath: string | null;
 	openInspectorForDocument: (relativePath: string) => Promise<void>;
 	resetDraft: () => void;
+	runWithDirtyGuard: (task: () => Promise<void>) => Promise<void>;
 	saveDraft: () => Promise<void>;
 	selectDocument: (relativePath: string) => Promise<void>;
 	state: NoteInspectorState;
@@ -95,7 +98,7 @@ function createDraft(document: WorkspaceDocument): NoteInspectorDraft {
 
 function normalizeDraft(draft: NoteInspectorDraft) {
 	return {
-		title: draft.title.trim(),
+		title: normalizeDocumentTitle(draft.title),
 		labels: parseLabelsInput(draft.labelsInput),
 		targetParentRelativePath: draft.targetParentRelativePath.trim(),
 	};
@@ -279,17 +282,9 @@ export function useNoteInspectorController(options: UseNoteInspectorControllerOp
 		if (state.isSaving) return;
 
 		if (activeDocument?.relativePath === relativePath) {
-			if (state.isOpen) {
-				if (state.isDirty) {
-					queueDiscardIntent({ kind: "closeInspector" });
-					return;
-				}
-
-				dispatch({ type: "closeInspector" });
-				return;
+			if (!state.isOpen) {
+				dispatch({ type: "openInspector" });
 			}
-
-			dispatch({ type: "openInspector" });
 			return;
 		}
 
@@ -343,10 +338,21 @@ export function useNoteInspectorController(options: UseNoteInspectorControllerOp
 		dispatch({ type: "resetDraft" });
 	});
 
+	const runWithDirtyGuard = useEventCallback(async (task: () => Promise<void>) => {
+		if (state.isSaving) return;
+
+		if (state.isDirty) {
+			queueDiscardIntent({ kind: "continueAction" }, task);
+			return;
+		}
+
+		await task();
+	});
+
 	const saveDraft = useEventCallback(async () => {
 		if (!activeDocument || !state.draft || state.isSaving) return;
 
-		const normalizedTitle = state.draft.title.trim();
+		const normalizedTitle = normalizeDocumentTitle(state.draft.title);
 		if (!normalizedTitle || !state.isDirty) return;
 
 		dispatch({ type: "startSaving" });
@@ -422,6 +428,7 @@ export function useNoteInspectorController(options: UseNoteInspectorControllerOp
 		inspectorDocumentRelativePath,
 		openInspectorForDocument,
 		resetDraft,
+		runWithDirtyGuard,
 		saveDraft,
 		selectDocument,
 		state,

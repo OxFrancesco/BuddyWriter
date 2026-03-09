@@ -6,6 +6,8 @@ describe("shouldIgnoreWorkspaceWatcherPath", () => {
 		expect(shouldIgnoreWorkspaceWatcherPath(".buddywriter")).toBe(true);
 		expect(shouldIgnoreWorkspaceWatcherPath(".buddywriter/workspace.json")).toBe(true);
 		expect(shouldIgnoreWorkspaceWatcherPath(".buddywriter\\workspace.json")).toBe(true);
+		expect(shouldIgnoreWorkspaceWatcherPath(".trash")).toBe(true);
+		expect(shouldIgnoreWorkspaceWatcherPath(".trash/123-Note.md")).toBe(true);
 	});
 
 	it("ignores temporary file writes", () => {

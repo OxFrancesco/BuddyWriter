@@ -126,4 +126,38 @@ describe("useNoteInspectorController", () => {
 
 		expect(onOpenDocument).toHaveBeenCalledWith("Inbox/Idea.md");
 	});
+
+	it("queues external actions behind discard confirmation while dirty", async () => {
+		const onArchiveDocument = vi.fn().mockResolvedValue(undefined);
+		const onOpenDocument = vi.fn().mockResolvedValue(undefined);
+		const onSaveDocumentMetadata = vi.fn().mockResolvedValue(undefined);
+		const externalAction = vi.fn().mockResolvedValue(undefined);
+		const { result } = renderHook(() => useNoteInspectorController({
+			activeDocument: createActiveDocument(),
+			onArchiveDocument,
+			onOpenDocument,
+			onSaveDocumentMetadata,
+		}));
+
+		await act(async () => {
+			await result.current.openInspectorForDocument("Projects/Roadmap/Plan.md");
+		});
+
+		act(() => {
+			result.current.updateLabelsInput("draft, roadmap");
+		});
+
+		await act(async () => {
+			await result.current.runWithDirtyGuard(externalAction);
+		});
+
+		expect(externalAction).not.toHaveBeenCalled();
+		expect(result.current.state.discardIntent).toEqual({ kind: "continueAction" });
+
+		await act(async () => {
+			await result.current.confirmDiscard();
+		});
+
+		expect(externalAction).toHaveBeenCalledTimes(1);
+	});
 });

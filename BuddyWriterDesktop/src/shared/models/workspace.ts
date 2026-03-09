@@ -11,7 +11,7 @@ export type WorkspaceDocumentMetadata = {
 
 export type WorkspaceMetadata = {
 	lastOpenDocument: string | null;
-	documents: Record<string, WorkspaceDocumentMetadata>;
+	documents?: Record<string, WorkspaceDocumentMetadata>;
 };
 
 export type WorkspaceDocument = {

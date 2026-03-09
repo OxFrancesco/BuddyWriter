@@ -141,10 +141,10 @@ export function SettingsPanel(props: SettingsPanelProps): React.ReactElement {
 								Use Folder
 							</button>
 						</div>
-						<p className="settings-hint">
-							BuddyWriter stores your notes as real <code>.md</code> files inside this folder, with workspace metadata in <code>.buddywriter/</code>.
-						</p>
-					</div>
+							<p className="settings-hint">
+								BuddyWriter stores your notes as real <code>.md</code> files inside this folder, with note metadata in front matter and app state in <code>.buddywriter/</code>.
+							</p>
+						</div>
 
 					<div id="openrouter-settings" className="settings-section" style={{ display: currentSettings?.provider === "openrouter" ? "flex" : "none" }}>
 						<label className="settings-label">OpenRouter API Key</label>

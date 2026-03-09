@@ -1,4 +1,5 @@
 import type { WorkspaceTreeEntry } from "../../shared/models/workspace";
+import { parseDocumentLabelsInput } from "../../shared/utils/note-metadata";
 
 export function getPathLeaf(path: string): string {
 	const parts = path.split(/[\\/]/).filter(Boolean);
@@ -13,11 +14,7 @@ export function getParentRelativePath(path?: string | null): string {
 }
 
 export function parseLabelsInput(value: string): string[] {
-	return Array.from(new Set(value
-		.split(",")
-		.map((label) => label.trim().replace(/\s+/g, " "))
-		.filter(Boolean)))
-		.sort((left, right) => left.localeCompare(right, undefined, { sensitivity: "base" }));
+	return parseDocumentLabelsInput(value);
 }
 
 export function getDirectoryEntries(entries: WorkspaceTreeEntry[], directories = new Set<string>()): Set<string> {

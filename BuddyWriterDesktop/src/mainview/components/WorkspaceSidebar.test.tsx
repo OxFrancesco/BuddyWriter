@@ -97,6 +97,7 @@ function renderSidebar(overrides?: Partial<React.ComponentProps<typeof Workspace
 			onArchiveDocument={vi.fn().mockResolvedValue(undefined)}
 			onCreateDocument={vi.fn()}
 			onCreateFolder={vi.fn()}
+			onDeleteDocument={vi.fn().mockResolvedValue(undefined)}
 			onOpenDocument={vi.fn().mockResolvedValue(undefined)}
 			onSaveDocumentMetadata={vi.fn().mockResolvedValue(undefined)}
 			tree={createTree()}
@@ -106,15 +107,21 @@ function renderSidebar(overrides?: Partial<React.ComponentProps<typeof Workspace
 	);
 }
 
+function expandSidebar() {
+	fireEvent.click(screen.getByRole("button", { name: "Expand sidebar" }));
+}
+
 function WorkspaceSidebarHarness(props: {
 	initialActivePath?: string;
 	onArchiveDocumentSpy?: (params: { relativePath: string; archived: boolean }) => void;
+	onDeleteDocumentSpy?: (relativePath: string) => void;
 	onOpenDocumentSpy?: (relativePath: string) => void;
 	onSaveDocumentMetadataSpy?: (params: SaveDocumentMetadataParams) => void;
 }) {
 	const {
 		initialActivePath = "Projects/Roadmap/Plan.md",
 		onArchiveDocumentSpy = vi.fn(),
+		onDeleteDocumentSpy = vi.fn(),
 		onOpenDocumentSpy = vi.fn(),
 		onSaveDocumentMetadataSpy = vi.fn(),
 	} = props;
@@ -147,6 +154,19 @@ function WorkspaceSidebarHarness(props: {
 			}}
 			onCreateDocument={vi.fn()}
 			onCreateFolder={vi.fn()}
+			onDeleteDocument={async (relativePath) => {
+				onDeleteDocumentSpy(relativePath);
+				setDocuments((previousDocuments) => {
+					const nextDocuments = { ...previousDocuments };
+					delete nextDocuments[relativePath];
+					return nextDocuments;
+				});
+
+				if (activePath === relativePath) {
+					const nextActivePath = Object.keys(documents).find((path) => path !== relativePath) ?? "";
+					setActivePath(nextActivePath);
+				}
+			}}
 			onOpenDocument={async (relativePath) => {
 				onOpenDocumentSpy(relativePath);
 				setActivePath(relativePath);
@@ -185,8 +205,9 @@ function WorkspaceSidebarHarness(props: {
 describe("WorkspaceSidebar", () => {
 	it("opens a docked inspector for the active note and excludes Archive from folder options", () => {
 		renderSidebar();
+		expandSidebar();
 
-		fireEvent.click(screen.getByRole("button", { name: "Note settings for Plan" }));
+		fireEvent.click(screen.getByRole("button", { name: "Move note Plan" }));
 
 		expect(screen.getByText("Note Settings")).not.toBeNull();
 		const options = screen.getAllByRole("option").map((option) => option.textContent);
@@ -200,8 +221,9 @@ describe("WorkspaceSidebar", () => {
 	it("shows discard confirmation before switching notes when the inspector is dirty", () => {
 		const onOpenDocument = vi.fn().mockResolvedValue(undefined);
 		renderSidebar({ onOpenDocument });
+		expandSidebar();
 
-		fireEvent.click(screen.getByRole("button", { name: "Note settings for Plan" }));
+		fireEvent.click(screen.getByRole("button", { name: "Move note Plan" }));
 		fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Plan Updated" } });
 		fireEvent.click(screen.getByRole("button", { name: "Open note Idea" }));
 
@@ -211,8 +233,9 @@ describe("WorkspaceSidebar", () => {
 
 	it("keeps the inspector open and rebinds to the next active note when switching cleanly", async () => {
 		render(<WorkspaceSidebarHarness />);
+		expandSidebar();
 
-		fireEvent.click(screen.getByRole("button", { name: "Note settings for Plan" }));
+		fireEvent.click(screen.getByRole("button", { name: "Move note Plan" }));
 		expect(screen.getByDisplayValue("Plan")).not.toBeNull();
 
 		fireEvent.click(screen.getByRole("button", { name: "Open note Idea" }));
@@ -225,8 +248,9 @@ describe("WorkspaceSidebar", () => {
 
 	it("does not close the inspector on outside click", () => {
 		renderSidebar();
+		expandSidebar();
 
-		fireEvent.click(screen.getByRole("button", { name: "Note settings for Plan" }));
+		fireEvent.click(screen.getByRole("button", { name: "Move note Plan" }));
 		fireEvent.click(document.body);
 
 		expect(screen.getByText("Note Settings")).not.toBeNull();
@@ -235,8 +259,9 @@ describe("WorkspaceSidebar", () => {
 	it("saves metadata in a single call", async () => {
 		const onSaveDocumentMetadata = vi.fn().mockResolvedValue(undefined);
 		renderSidebar({ onSaveDocumentMetadata });
+		expandSidebar();
 
-		fireEvent.click(screen.getByRole("button", { name: "Note settings for Plan" }));
+		fireEvent.click(screen.getByRole("button", { name: "Move note Plan" }));
 		fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Plan Updated" } });
 		fireEvent.change(screen.getByLabelText("Labels"), { target: { value: "roadmap, draft, roadmap" } });
 		fireEvent.change(screen.getByLabelText("Folder"), { target: { value: "Inbox" } });
@@ -251,5 +276,32 @@ describe("WorkspaceSidebar", () => {
 			});
 		});
 		expect(onSaveDocumentMetadata).toHaveBeenCalledTimes(1);
+	});
+
+	it("archives notes from the hover action strip", async () => {
+		const onArchiveDocument = vi.fn().mockResolvedValue(undefined);
+		renderSidebar({ onArchiveDocument });
+		expandSidebar();
+
+		fireEvent.click(screen.getByRole("button", { name: "Archive note Plan" }));
+
+		await waitFor(() => {
+			expect(onArchiveDocument).toHaveBeenCalledWith({
+				relativePath: "Projects/Roadmap/Plan.md",
+				archived: true,
+			});
+		});
+	});
+
+	it("deletes notes from the hover action strip", async () => {
+		const onDeleteDocument = vi.fn().mockResolvedValue(undefined);
+		renderSidebar({ onDeleteDocument });
+		expandSidebar();
+
+		fireEvent.click(screen.getByRole("button", { name: "Delete note Plan" }));
+
+		await waitFor(() => {
+			expect(onDeleteDocument).toHaveBeenCalledWith("Projects/Roadmap/Plan.md");
+		});
 	});
 });

@@ -27,4 +27,26 @@ describe("DocumentHeader", () => {
 
 		expect(screen.getByDisplayValue("Plan")).not.toBeNull();
 	});
+
+	it("allows creating the first note from the title field", () => {
+		const onRenameDocument = vi.fn();
+
+		render(
+			<DocumentHeader
+				activeDocument={null}
+				currentWorkspacePath="/tmp/BuddyWriter"
+				onRenameDocument={onRenameDocument}
+				saveStatusLabel="Saved"
+				saveStatusState="saved"
+			/>
+		);
+
+		fireEvent.doubleClick(screen.getByText("Untitled"));
+		fireEvent.change(screen.getByPlaceholderText("Untitled"), {
+			target: { value: "First Note" },
+		});
+		fireEvent.blur(screen.getByDisplayValue("First Note"));
+
+		expect(onRenameDocument).toHaveBeenCalledWith("First Note");
+	});
 });

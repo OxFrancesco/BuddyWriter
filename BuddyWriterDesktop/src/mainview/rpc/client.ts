@@ -45,6 +45,9 @@ export const rpcClient = {
 	createFolder(params: WriterBunRequestMap["createFolder"]["params"]) {
 		return getRequestClient().createFolder(params);
 	},
+	deleteDocument(params: WriterBunRequestMap["deleteDocument"]["params"]) {
+		return getRequestClient().deleteDocument(params);
+	},
 	getLocalAICatalog(params: WriterBunRequestMap["getLocalAICatalog"]["params"]) {
 		return getRequestClient().getLocalAICatalog(params);
 	},

@@ -5,7 +5,6 @@ describe("workspace utils", () => {
 	it("normalizes labels by trimming, deduplicating, and sorting", () => {
 		expect(parseLabelsInput(" draft,Ideas, draft ,  in progress  ,ideas ")).toEqual([
 			"draft",
-			"Ideas",
 			"ideas",
 			"in progress",
 		]);

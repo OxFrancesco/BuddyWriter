@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import matter from "gray-matter";
 import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -23,7 +24,7 @@ describe("workspace-service helpers", () => {
 	});
 
 	it("normalizes workspace document labels", () => {
-		expect(normalizeWorkspaceDocumentLabels([" draft ", "ideas", "draft", "in progress "])).toEqual([
+		expect(normalizeWorkspaceDocumentLabels([" draft ", "Ideas", "draft", "in progress "])).toEqual([
 			"draft",
 			"ideas",
 			"in progress",
@@ -56,6 +57,10 @@ function createTestWorkspaceService(workspacePath: string) {
 	} as unknown as SettingsRepository;
 
 	return createWorkspaceService({ settingsRepository });
+}
+
+function readDocumentFile(workspacePath: string, relativePath: string) {
+	return matter(readFileSync(join(workspacePath, relativePath), "utf-8"));
 }
 
 describe("createWorkspaceService", () => {
@@ -95,6 +100,12 @@ describe("createWorkspaceService", () => {
 			},
 		]);
 		expect(state.activeDocument?.relativePath).toBe("Inbox/Renamed.md");
+		expect(readDocumentFile(workspacePath, "Inbox/Renamed.md")).toMatchObject({
+			content: "\n",
+			data: {
+				title: "Renamed",
+			},
+		});
 	});
 
 	it("does not recreate Inbox/Untitled.md after the note is removed", () => {
@@ -154,15 +165,17 @@ describe("createWorkspaceService", () => {
 			projectRelativePath: "Projects/Roadmap",
 			labels: ["draft", "planning"],
 		});
-		expect(workspaceService.readWorkspaceMetadata(workspacePath)).toMatchObject({
-			lastOpenDocument: "Projects/Roadmap/Product Plan.md",
-			documents: {
-				"Projects/Roadmap/Product Plan.md": {
-					labels: ["draft", "planning"],
-				},
+		expect(readDocumentFile(workspacePath, "Projects/Roadmap/Product Plan.md")).toMatchObject({
+			content: "\n",
+			data: {
+				title: "Product Plan",
+				labels: ["draft", "planning"],
 			},
 		});
-		expect(workspaceService.readWorkspaceMetadata(workspacePath).documents["Inbox/Untitled.md"]).toBeUndefined();
+		expect(workspaceService.readWorkspaceMetadata(workspacePath)).toEqual({
+			lastOpenDocument: "Projects/Roadmap/Product Plan.md",
+			documents: {},
+		});
 	});
 
 	it("updates labels in place when the document path does not change", () => {
@@ -184,13 +197,90 @@ describe("createWorkspaceService", () => {
 			parentRelativePath: "Inbox",
 			labels: ["draft", "ideas"],
 		});
-		expect(workspaceService.readWorkspaceMetadata(workspacePath)).toMatchObject({
+		expect(readDocumentFile(workspacePath, "Inbox/Untitled.md")).toMatchObject({
+			content: "\n",
+			data: {
+				title: "Untitled",
+				labels: ["draft", "ideas"],
+			},
+		});
+		expect(workspaceService.readWorkspaceMetadata(workspacePath)).toEqual({
 			lastOpenDocument: "Inbox/Untitled.md",
+			documents: {},
+		});
+	});
+
+	it("preserves front matter while saving document content", () => {
+		const workspacePath = mkdtempSync(join(tmpdir(), "buddywriter-workspace-"));
+		const workspaceService = createTestWorkspaceService(workspacePath);
+
+		workspaceService.createWorkspaceDocument(undefined, "Plan");
+		workspaceService.updateWorkspaceDocumentMetadata("Inbox/Plan.md", "Plan", ["Draft", "planning"], "Inbox");
+
+		workspaceService.saveWorkspaceDocument("Inbox/Plan.md", "# Draft\n\nBody copy");
+
+		expect(readDocumentFile(workspacePath, "Inbox/Plan.md")).toMatchObject({
+			content: "# Draft\n\nBody copy\n",
+			data: {
+				title: "Plan",
+				labels: ["draft", "planning"],
+			},
+		});
+	});
+
+	it("migrates legacy workspace labels into document front matter", () => {
+		const workspacePath = mkdtempSync(join(tmpdir(), "buddywriter-workspace-"));
+		const workspaceService = createTestWorkspaceService(workspacePath);
+
+		mkdirSync(join(workspacePath, "Inbox"), { recursive: true });
+		mkdirSync(join(workspacePath, ".buddywriter"), { recursive: true });
+		writeFileSync(join(workspacePath, "Inbox", "Legacy.md"), "Legacy body", "utf-8");
+		writeFileSync(join(workspacePath, ".buddywriter", "workspace.json"), JSON.stringify({
+			lastOpenDocument: "Inbox/Legacy.md",
 			documents: {
-				"Inbox/Untitled.md": {
-					labels: ["draft", "ideas"],
+				"Inbox/Legacy.md": {
+					labels: ["Draft", "ideas"],
 				},
 			},
+		}, null, 2));
+
+		const state = workspaceService.getWorkspaceState(workspacePath);
+
+		expect(state.activeDocument).toMatchObject({
+			relativePath: "Inbox/Legacy.md",
+			title: "Legacy",
+			labels: ["draft", "ideas"],
+			content: "Legacy body\n",
+		});
+		expect(readDocumentFile(workspacePath, "Inbox/Legacy.md")).toMatchObject({
+			content: "Legacy body\n",
+			data: {
+				title: "Legacy",
+				labels: ["draft", "ideas"],
+			},
+		});
+		expect(workspaceService.readWorkspaceMetadata(workspacePath)).toEqual({
+			lastOpenDocument: "Inbox/Legacy.md",
+			documents: {},
+		});
+	});
+
+	it("deletes the target note and clears stale metadata", () => {
+		const workspacePath = mkdtempSync(join(tmpdir(), "buddywriter-workspace-"));
+		const workspaceService = createTestWorkspaceService(workspacePath);
+
+		workspaceService.createWorkspaceDocument(undefined, "First");
+		workspaceService.createWorkspaceDocument(undefined, "Second");
+		workspaceService.setWorkspaceDocumentLabels("Inbox/Second.md", ["draft"]);
+		workspaceService.openWorkspaceDocument("Inbox/Second.md");
+
+		const state = workspaceService.deleteWorkspaceDocument("Inbox/Second.md");
+
+		expect(existsSync(join(workspacePath, "Inbox", "Second.md"))).toBe(false);
+		expect(state.activeDocument?.relativePath).toBe("Inbox/First.md");
+		expect(workspaceService.readWorkspaceMetadata(workspacePath)).toEqual({
+			lastOpenDocument: "Inbox/First.md",
+			documents: {},
 		});
 	});
 });

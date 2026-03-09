@@ -9,21 +9,27 @@ type DocumentHeaderProps = {
 	saveStatusState: "saved" | "saving" | "unsaved";
 };
 
+function getDisplayedTitle(activeDocument: WorkspaceDocument | null): string {
+	return activeDocument?.title ?? "Untitled";
+}
+
 export function DocumentHeader(props: DocumentHeaderProps): React.ReactElement {
 	const { activeDocument, currentWorkspacePath, onRenameDocument, saveStatusLabel, saveStatusState } = props;
 	const [isEditingTitle, setIsEditingTitle] = useState(false);
-	const [titleDraft, setTitleDraft] = useState(activeDocument?.title ?? "");
+	const displayedTitle = getDisplayedTitle(activeDocument);
+	const [titleDraft, setTitleDraft] = useState(displayedTitle);
 
 	useEffect(() => {
 		setIsEditingTitle(false);
-		setTitleDraft(activeDocument?.title ?? "");
-	}, [activeDocument?.relativePath, activeDocument?.title]);
+		setTitleDraft(displayedTitle);
+	}, [activeDocument?.relativePath, displayedTitle]);
 
 	const commitTitleRename = () => {
-		if (!activeDocument) {
+		if (!activeDocument && titleDraft.trim() === displayedTitle) {
 			setIsEditingTitle(false);
 			return;
 		}
+
 		setIsEditingTitle(false);
 		onRenameDocument(titleDraft);
 	};
@@ -31,7 +37,7 @@ export function DocumentHeader(props: DocumentHeaderProps): React.ReactElement {
 	return (
 		<div className="document-header">
 			<div className="document-header__text">
-				{isEditingTitle && activeDocument ? (
+				{isEditingTitle ? (
 					<input
 						type="text"
 						className="document-title-input"
@@ -51,21 +57,20 @@ export function DocumentHeader(props: DocumentHeaderProps): React.ReactElement {
 							}
 							if (event.key === "Escape") {
 								event.preventDefault();
-								setTitleDraft(activeDocument.title);
+								setTitleDraft(displayedTitle);
 								setIsEditingTitle(false);
 							}
 						}}
 					/>
 				) : (
 					<h1
-						className={`document-title ${activeDocument ? "editable" : ""}`}
+						className="document-title editable"
 						onDoubleClick={() => {
-							if (!activeDocument) return;
-							setTitleDraft(activeDocument.title);
+							setTitleDraft(displayedTitle);
 							setIsEditingTitle(true);
 						}}
 					>
-						{activeDocument?.title ?? "No document"}
+						{displayedTitle}
 					</h1>
 				)}
 				<div className="document-badges">
